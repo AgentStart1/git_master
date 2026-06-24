@@ -12,6 +12,8 @@ impl GitMasterApp {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "No directory selected".into());
 
+        let status_msg = self.status_message.clone();
+
         div()
             .flex()
             .flex_row()
@@ -21,7 +23,19 @@ impl GitMasterApp {
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
             .border_color(rgb(theme::BG_OVERLAY))
-            .child(div().flex_grow().text_sm().child(dir_label))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_grow()
+                    .child(div().text_sm().child(dir_label))
+                    .children(status_msg.map(|msg| {
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme::YELLOW))
+                            .child(msg)
+                    })),
+            )
             .child(
                 div()
                     .id("change-dir-btn")

@@ -11,6 +11,13 @@ pub enum DetailTab {
     GitLog,
 }
 
+pub struct ContextMenu {
+    pub repo_index: usize,
+    pub position: Point<Pixels>,
+    pub branches: Vec<String>,
+    pub show_branches: bool,
+}
+
 pub struct GitMasterApp {
     pub parent_dir: Option<PathBuf>,
     pub repos: Vec<RepoInfo>,
@@ -20,6 +27,9 @@ pub struct GitMasterApp {
     pub log_entries: Vec<LogEntry>,
     pub scanning: bool,
     pub loading_detail: bool,
+    pub context_menu: Option<ContextMenu>,
+    pub status_message: Option<String>,
+    pub busy: bool,
 }
 
 impl GitMasterApp {
@@ -33,6 +43,9 @@ impl GitMasterApp {
             log_entries: Vec::new(),
             scanning: false,
             loading_detail: false,
+            context_menu: None,
+            status_message: None,
+            busy: false,
         }
     }
 
@@ -88,6 +101,36 @@ impl GitMasterApp {
     pub fn set_tab(&mut self, tab: DetailTab) {
         self.active_tab = tab;
     }
+
+    pub fn open_context_menu(
+        &mut self,
+        repo_index: usize,
+        position: Point<Pixels>,
+        branches: Vec<String>,
+    ) {
+        self.context_menu = Some(ContextMenu {
+            repo_index,
+            position,
+            branches,
+            show_branches: false,
+        });
+    }
+
+    pub fn close_context_menu(&mut self) {
+        self.context_menu = None;
+    }
+
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+    }
+
+    pub fn refresh_repo(&mut self, index: usize) {
+        if let Some(repo) = self.repos.get(index) {
+            if let Some(info) = crate::git_ops::build_repo_info(&repo.path) {
+                self.repos[index] = info;
+            }
+        }
+    }
 }
 
 impl Render for GitMasterApp {
@@ -107,5 +150,6 @@ impl Render for GitMasterApp {
                     .child(self.render_repo_list(window, cx))
                     .children(self.render_detail_panel(window, cx)),
             )
+            .children(self.render_context_menu(window, cx))
     }
 }

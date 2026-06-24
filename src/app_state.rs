@@ -1,8 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::*;
 
-use crate::git_ops;
 use crate::models::{LogEntry, RepoDetail, RepoInfo};
 use crate::ui::theme;
 
@@ -19,6 +18,8 @@ pub struct GitMasterApp {
     pub active_tab: DetailTab,
     pub detail: Option<RepoDetail>,
     pub log_entries: Vec<LogEntry>,
+    pub scanning: bool,
+    pub loading_detail: bool,
 }
 
 impl GitMasterApp {
@@ -30,23 +31,58 @@ impl GitMasterApp {
             active_tab: DetailTab::Info,
             detail: None,
             log_entries: Vec::new(),
+            scanning: false,
+            loading_detail: false,
         }
     }
 
-    pub fn set_parent_dir(&mut self, path: PathBuf) {
-        self.repos = git_ops::scan_repos(&path);
+    /// Mark a directory as the active parent and enter the scanning state.
+    /// The actual `scan_repos` work happens off-thread; results land via
+    /// [`apply_scan`].
+    pub fn begin_scan(&mut self, path: PathBuf) {
         self.parent_dir = Some(path);
+        self.repos.clear();
         self.selected_index = None;
         self.detail = None;
         self.log_entries.clear();
+        self.scanning = true;
+        self.loading_detail = false;
     }
 
-    pub fn select_repo(&mut self, index: usize) {
+    /// Apply scan results, ignoring stale completions from a directory the
+    /// user has since navigated away from.
+    pub fn apply_scan(&mut self, path: &Path, repos: Vec<RepoInfo>) {
+        if self.parent_dir.as_deref() != Some(path) {
+            return;
+        }
+        self.repos = repos;
+        self.scanning = false;
+    }
+
+    /// Mark a repo as selected and enter the loading state. The detail and
+    /// commit-log work happens off-thread; results land via [`apply_detail`].
+    pub fn begin_select(&mut self, index: usize) {
         self.selected_index = Some(index);
         self.active_tab = DetailTab::Info;
-        let repo = &self.repos[index];
-        self.detail = git_ops::get_repo_detail(&repo.path);
-        self.log_entries = git_ops::get_commit_log(&repo.path, 200);
+        self.detail = None;
+        self.log_entries.clear();
+        self.loading_detail = true;
+    }
+
+    /// Apply detail results, ignoring stale completions for a repo other than
+    /// the one currently selected.
+    pub fn apply_detail(
+        &mut self,
+        index: usize,
+        detail: Option<RepoDetail>,
+        log_entries: Vec<LogEntry>,
+    ) {
+        if self.selected_index != Some(index) {
+            return;
+        }
+        self.detail = detail;
+        self.log_entries = log_entries;
+        self.loading_detail = false;
     }
 
     pub fn set_tab(&mut self, tab: DetailTab) {

@@ -11,7 +11,27 @@ impl GitMasterApp {
         cx: &mut Context<'_, Self>,
     ) -> Option<Div> {
         self.selected_index?;
-        let detail = self.detail.as_ref()?;
+
+        let body = if self.loading_detail {
+            div()
+                .p(px(16.0))
+                .text_sm()
+                .text_color(rgb(theme::TEXT_SUBTLE))
+                .child("Loading…")
+                .into_any_element()
+        } else if let Some(detail) = self.detail.as_ref() {
+            match self.active_tab {
+                DetailTab::Info => self.render_info_tab(detail).into_any_element(),
+                DetailTab::GitLog => self.render_log_tab().into_any_element(),
+            }
+        } else {
+            div()
+                .p(px(16.0))
+                .text_sm()
+                .text_color(rgb(theme::TEXT_SUBTLE))
+                .child("Failed to open repository.")
+                .into_any_element()
+        };
 
         Some(
             div()
@@ -20,10 +40,7 @@ impl GitMasterApp {
                 .flex_grow()
                 .bg(rgb(theme::BG_BASE))
                 .child(self.render_tabs(cx))
-                .child(match self.active_tab {
-                    DetailTab::Info => self.render_info_tab(detail).into_any_element(),
-                    DetailTab::GitLog => self.render_log_tab().into_any_element(),
-                }),
+                .child(body),
         )
     }
 

@@ -1,6 +1,7 @@
 use gpui::*;
 
 use crate::app_state::GitMasterApp;
+use crate::git_ops;
 use crate::ui::theme;
 
 impl GitMasterApp {
@@ -20,6 +21,14 @@ impl GitMasterApp {
             .border_r_1()
             .border_color(rgb(theme::BG_OVERLAY))
             .overflow_y_scroll()
+            .children(self.scanning.then(|| {
+                div()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .text_xs()
+                    .text_color(rgb(theme::TEXT_SUBTLE))
+                    .child("Scanning…")
+            }))
             .children(self.repos.iter().enumerate().map(|(i, repo)| {
                 let is_selected = self.selected_index == Some(i);
                 let bg = if is_selected {
@@ -52,8 +61,30 @@ impl GitMasterApp {
                     .bg(bg)
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        this.select_repo(i);
+                        let Some(repo) = this.repos.get(i) else {
+                            return;
+                        };
+                        let path = repo.path.clone();
+                        this.begin_select(i);
                         cx.notify();
+                        cx.spawn(async move |entity, cx| {
+                            let (detail, log_entries) = cx
+                                .background_executor()
+                                .spawn(async move {
+                                    (
+                                        git_ops::get_repo_detail(&path),
+                                        git_ops::get_commit_log(&path, 200),
+                                    )
+                                })
+                                .await;
+                            entity
+                                .update(cx, |this, cx| {
+                                    this.apply_detail(i, detail, log_entries);
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .detach();
                     }))
                     .child(
                         div()

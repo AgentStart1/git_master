@@ -1,6 +1,7 @@
 use gpui::*;
 
 use crate::app_state::GitMasterApp;
+use crate::git_ops;
 use crate::ui::theme;
 
 impl GitMasterApp {
@@ -45,7 +46,18 @@ impl GitMasterApp {
                             {
                                 entity
                                     .update(cx, |this, cx| {
-                                        this.set_parent_dir(path);
+                                        this.begin_scan(path.clone());
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                let scan_path = path.clone();
+                                let repos = cx
+                                    .background_executor()
+                                    .spawn(async move { git_ops::scan_repos(&scan_path) })
+                                    .await;
+                                entity
+                                    .update(cx, |this, cx| {
+                                        this.apply_scan(&path, repos);
                                         cx.notify();
                                     })
                                     .ok();

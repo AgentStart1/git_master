@@ -1,0 +1,9 @@
+[package]
+name = "git_master"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = "0.2.2"
+git2 = "0.21.0"
+chrono = "0.4"

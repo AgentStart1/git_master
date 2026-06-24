@@ -1,0 +1,176 @@
+use std::path::Path;
+
+use chrono::TimeZone;
+use git2::{BranchType, Repository, Sort, StatusOptions};
+
+use crate::models::{FileStatusSummary, LogEntry, RepoDetail, RepoInfo};
+
+pub fn scan_repos(parent_dir: &Path) -> Vec<RepoInfo> {
+    let mut repos = Vec::new();
+    let entries = match std::fs::read_dir(parent_dir) {
+        Ok(e) => e,
+        Err(_) => return repos,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let repo = match Repository::open(&path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        let is_dirty = check_dirty(&repo);
+        let current_branch = get_branch_name(&repo);
+        let (ahead, behind) = get_ahead_behind(&repo, &current_branch);
+
+        repos.push(RepoInfo {
+            name,
+            path,
+            is_dirty,
+            ahead,
+            behind,
+            current_branch,
+        });
+    }
+    repos.sort_by_key(|r| r.name.to_lowercase());
+    repos
+}
+
+pub fn get_repo_detail(repo_path: &Path) -> Option<RepoDetail> {
+    let repo = Repository::open(repo_path).ok()?;
+    let current_branch = get_branch_name(&repo);
+    let remote_url = repo
+        .find_remote("origin")
+        .ok()
+        .and_then(|r| r.url().ok().map(String::from));
+    let file_status = build_file_status(&repo);
+
+    Some(RepoDetail {
+        path: repo_path.display().to_string(),
+        current_branch,
+        remote_url,
+        file_status,
+    })
+}
+
+pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
+    let mut entries = Vec::new();
+    let repo = match Repository::open(repo_path) {
+        Ok(r) => r,
+        Err(_) => return entries,
+    };
+    let mut revwalk = match repo.revwalk() {
+        Ok(r) => r,
+        Err(_) => return entries,
+    };
+    revwalk.push_head().ok();
+    revwalk.set_sorting(Sort::TIME).ok();
+
+    for oid in revwalk.flatten().take(limit) {
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let hash = commit.id().to_string();
+        let hash = hash[..7.min(hash.len())].to_string();
+        let author = commit
+            .author()
+            .name()
+            .unwrap_or("unknown")
+            .to_string();
+        let time = commit.time();
+        let date = chrono::Utc
+            .timestamp_opt(time.seconds(), 0)
+            .single()
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        let message = commit
+            .message()
+            .unwrap_or("")
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+
+        entries.push(LogEntry {
+            hash,
+            author,
+            date,
+            message,
+        });
+    }
+    entries
+}
+
+fn check_dirty(repo: &Repository) -> bool {
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true);
+    match repo.statuses(Some(&mut opts)) {
+        Ok(statuses) => statuses.iter().any(|s| {
+            !s.status()
+                .intersects(git2::Status::IGNORED | git2::Status::CURRENT)
+        }),
+        Err(_) => false,
+    }
+}
+
+fn get_branch_name(repo: &Repository) -> String {
+    repo.head()
+        .ok()
+        .and_then(|r| r.shorthand().ok().map(String::from))
+        .unwrap_or_else(|| "HEAD detached".into())
+}
+
+fn get_ahead_behind(repo: &Repository, branch_name: &str) -> (usize, usize) {
+    let local = match repo.find_branch(branch_name, BranchType::Local) {
+        Ok(b) => b,
+        Err(_) => return (0, 0),
+    };
+    let upstream = match local.upstream() {
+        Ok(u) => u,
+        Err(_) => return (0, 0),
+    };
+    let local_oid = match local.get().target() {
+        Some(o) => o,
+        None => return (0, 0),
+    };
+    let upstream_oid = match upstream.get().target() {
+        Some(o) => o,
+        None => return (0, 0),
+    };
+    repo.graph_ahead_behind(local_oid, upstream_oid)
+        .unwrap_or((0, 0))
+}
+
+fn build_file_status(repo: &Repository) -> FileStatusSummary {
+    let mut summary = FileStatusSummary::default();
+    let statuses = match repo.statuses(None) {
+        Ok(s) => s,
+        Err(_) => return summary,
+    };
+    for entry in statuses.iter() {
+        let s = entry.status();
+        if s.intersects(git2::Status::WT_NEW | git2::Status::INDEX_NEW) {
+            summary.new_files += 1;
+        }
+        if s.intersects(git2::Status::WT_MODIFIED | git2::Status::INDEX_MODIFIED) {
+            summary.modified += 1;
+        }
+        if s.intersects(git2::Status::WT_DELETED | git2::Status::INDEX_DELETED) {
+            summary.deleted += 1;
+        }
+        if s.intersects(git2::Status::WT_RENAMED | git2::Status::INDEX_RENAMED) {
+            summary.renamed += 1;
+        }
+        if s.intersects(git2::Status::CONFLICTED) {
+            summary.conflicted += 1;
+        }
+    }
+    summary
+}

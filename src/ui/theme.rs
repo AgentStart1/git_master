@@ -1,0 +1,9 @@
+pub const BG_BASE: u32 = 0x1e1e2e;
+pub const BG_SURFACE: u32 = 0x181825;
+pub const BG_OVERLAY: u32 = 0x313244;
+pub const TEXT_PRIMARY: u32 = 0xcdd6f4;
+pub const TEXT_SUBTLE: u32 = 0xa6adc8;
+pub const ACCENT: u32 = 0x89b4fa;
+pub const GREEN: u32 = 0xa6e3a1;
+pub const RED: u32 = 0xf38ba8;
+pub const YELLOW: u32 = 0xf9e2af;

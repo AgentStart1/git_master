@@ -38,17 +38,14 @@ pub fn scan_repos(parent_dir: &Path) -> Vec<RepoInfo> {
             current_branch,
         });
     }
-    repos.sort_by_key(|r| r.name.to_lowercase());
+    repos.sort_by_cached_key(|r| r.name.to_lowercase());
     repos
 }
 
 pub fn get_repo_detail(repo_path: &Path) -> Option<RepoDetail> {
     let repo = Repository::open(repo_path).ok()?;
     let current_branch = get_branch_name(&repo);
-    let remote_url = repo
-        .find_remote("origin")
-        .ok()
-        .and_then(|r| r.url().ok().map(String::from));
+    let remote_url = first_remote_url(&repo);
     let file_status = build_file_status(&repo);
 
     Some(RepoDetail {
@@ -108,10 +105,38 @@ pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
     entries
 }
 
-fn check_dirty(repo: &Repository) -> bool {
+/// Shared status configuration so the dirty flag and the per-category counts
+/// observe the same set of files: untracked files (recursing into untracked
+/// dirs) are included, ignored files are excluded, and rename detection is on
+/// in both the index and the work tree.
+fn status_options() -> StatusOptions {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true);
-    match repo.statuses(Some(&mut opts)) {
+    opts.recurse_untracked_dirs(true);
+    opts.renames_head_to_index(true);
+    opts.renames_index_to_workdir(true);
+    opts
+}
+
+fn first_remote_url(repo: &Repository) -> Option<String> {
+    if let Ok(origin) = repo.find_remote("origin")
+        && let Ok(url) = origin.url()
+    {
+        return Some(url.to_string());
+    }
+    let names = repo.remotes().ok()?;
+    for name in names.iter().flatten().flatten() {
+        if let Ok(remote) = repo.find_remote(name)
+            && let Ok(url) = remote.url()
+        {
+            return Some(url.to_string());
+        }
+    }
+    None
+}
+
+fn check_dirty(repo: &Repository) -> bool {
+    match repo.statuses(Some(&mut status_options())) {
         Ok(statuses) => statuses.iter().any(|s| {
             !s.status()
                 .intersects(git2::Status::IGNORED | git2::Status::CURRENT)
@@ -150,7 +175,7 @@ fn get_ahead_behind(repo: &Repository, branch_name: &str) -> (usize, usize) {
 
 fn build_file_status(repo: &Repository) -> FileStatusSummary {
     let mut summary = FileStatusSummary::default();
-    let statuses = match repo.statuses(None) {
+    let statuses = match repo.statuses(Some(&mut status_options())) {
         Ok(s) => s,
         Err(_) => return summary,
     };

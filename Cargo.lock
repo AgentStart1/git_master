@@ -1961,6 +1961,8 @@ dependencies = [
  "chrono",
  "git2",
  "gpui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

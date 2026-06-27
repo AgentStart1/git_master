@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libvulkan-dev libwayland-dev libfontconfig-dev
+
+      - name: Check (prod)
+        run: cargo check
+
+      - name: Check (test-rpc)
+        run: cargo check --features test-rpc
+
+  e2e:
+    name: E2E tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libvulkan-dev libwayland-dev libfontconfig-dev \
+            xvfb netcat-openbsd
+
+      - name: Build (test-rpc)
+        run: cargo build --features test-rpc
+
+      - name: Run E2E tests
+        run: xvfb-run bash tests/e2e_test.sh

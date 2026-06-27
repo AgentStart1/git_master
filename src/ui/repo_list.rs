@@ -9,27 +9,8 @@ impl GitMasterApp {
         &self,
         _window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> impl IntoElement {
-        div()
-            .id("repo-list")
-            .flex()
-            .flex_col()
-            .w(px(280.0))
-            .min_w(px(280.0))
-            .h_full()
-            .bg(rgb(theme::BG_BASE))
-            .border_r_1()
-            .border_color(rgb(theme::BG_OVERLAY))
-            .overflow_y_scroll()
-            .children(self.scanning.then(|| {
-                div()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_SUBTLE))
-                    .child("Scanning…")
-            }))
-            .children(self.repos.iter().enumerate().map(|(i, repo)| {
+    ) -> AnyElement {
+        let repo_items: Vec<AnyElement> = self.repos.iter().enumerate().map(|(i, repo)| {
                 let is_selected = self.selected_index == Some(i);
                 let bg = if is_selected {
                     rgb(theme::BG_OVERLAY)
@@ -50,7 +31,7 @@ impl GitMasterApp {
                     None
                 };
 
-                div()
+                let item = div()
                     .id(ElementId::Name(format!("repo-{i}").into()))
                     .flex()
                     .flex_row()
@@ -138,15 +119,39 @@ impl GitMasterApp {
                             .children(ahead_behind.map(|ab| {
                                 div().text_xs().text_color(rgb(theme::YELLOW)).child(ab)
                             })),
-                    )
+                    );
+
+                self.track(&format!("repo-{i}"), item)
+            }).collect();
+
+        div()
+            .id("repo-list")
+            .flex()
+            .flex_col()
+            .w(px(280.0))
+            .min_w(px(280.0))
+            .h_full()
+            .bg(rgb(theme::BG_BASE))
+            .border_r_1()
+            .border_color(rgb(theme::BG_OVERLAY))
+            .overflow_y_scroll()
+            .children(self.scanning.then(|| {
+                div()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .text_xs()
+                    .text_color(rgb(theme::TEXT_SUBTLE))
+                    .child("Scanning…")
             }))
+            .children(repo_items)
+            .into_any_element()
     }
 
     pub fn render_context_menu(
         &self,
         _window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Option<impl IntoElement> {
+    ) -> Option<AnyElement> {
         let menu = self.context_menu.as_ref()?;
         let repo_index = menu.repo_index;
         let position = menu.position;
@@ -163,10 +168,9 @@ impl GitMasterApp {
                 .filter(|b| **b != current_branch)
                 .map(|branch| {
                     let branch_name = branch.clone();
-                    div()
-                        .id(ElementId::Name(
-                            format!("ctx-branch-{branch_name}").into(),
-                        ))
+                    let id_str = format!("ctx-branch-{branch_name}");
+                    let item = div()
+                        .id(ElementId::Name(id_str.clone().into()))
                         .px(px(24.0))
                         .py(px(6.0))
                         .text_xs()
@@ -176,13 +180,55 @@ impl GitMasterApp {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.close_context_menu();
                             this.do_checkout(repo_index, branch_name.clone(), cx);
-                        }))
-                        .into_any_element()
+                        }));
+                    self.track(&id_str, item)
                 })
                 .collect()
         } else {
             Vec::new()
         };
+
+        let switch_branch = div()
+            .id("ctx-switch-branch")
+            .px(px(12.0))
+            .py(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
+            .child(if show_branches {
+                "▾ Switch Branch"
+            } else {
+                "▸ Switch Branch"
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(menu) = this.context_menu.as_mut() {
+                    menu.show_branches = !menu.show_branches;
+                }
+                cx.notify();
+            }));
+
+        let pull_rebase = div()
+            .id("ctx-pull-rebase")
+            .px(px(12.0))
+            .py(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
+            .child("Pull --rebase")
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.close_context_menu();
+                this.do_pull_rebase(repo_index, cx);
+            }));
+
+        let push = div()
+            .id("ctx-push")
+            .px(px(12.0))
+            .py(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
+            .child("Push")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.close_context_menu();
+                this.do_push(repo_index, window, cx);
+            }));
 
         let menu_panel = div()
             .id("context-menu")
@@ -198,25 +244,7 @@ impl GitMasterApp {
                 this.close_context_menu();
                 cx.notify();
             }))
-            .child(
-                div()
-                    .id("ctx-switch-branch")
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-                    .child(if show_branches {
-                        "▾ Switch Branch"
-                    } else {
-                        "▸ Switch Branch"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(menu) = this.context_menu.as_mut() {
-                            menu.show_branches = !menu.show_branches;
-                        }
-                        cx.notify();
-                    })),
-            )
+            .child(self.track("ctx-switch-branch", switch_branch))
             .children(branch_items)
             .child(
                 div()
@@ -225,34 +253,10 @@ impl GitMasterApp {
                     .h(px(1.0))
                     .bg(rgb(theme::BG_OVERLAY)),
             )
-            .child(
-                div()
-                    .id("ctx-pull-rebase")
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-                    .child("Pull --rebase")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.close_context_menu();
-                        this.do_pull_rebase(repo_index, cx);
-                    })),
-            )
-            .child(
-                div()
-                    .id("ctx-push")
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-                    .child("Push")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.close_context_menu();
-                        this.do_push(repo_index, window, cx);
-                    })),
-            );
+            .child(self.track("ctx-pull-rebase", pull_rebase))
+            .child(self.track("ctx-push", push));
 
-        Some(deferred(anchored().position(position).child(menu_panel)))
+        Some(deferred(anchored().position(position).child(menu_panel)).into_any_element())
     }
 
     fn do_checkout(

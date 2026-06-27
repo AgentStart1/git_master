@@ -30,6 +30,12 @@ pub struct GitMasterApp {
     pub context_menu: Option<ContextMenu>,
     pub status_message: Option<String>,
     pub busy: bool,
+    #[cfg(feature = "test-rpc")]
+    pub bounds_registry: crate::test_rpc::tracked::BoundsRegistry,
+    #[cfg(feature = "test-rpc")]
+    pub tree_provider: crate::test_rpc::server::ViewTreeProvider,
+    #[cfg(feature = "test-rpc")]
+    pub command_queue: crate::test_rpc::server::CommandQueue,
 }
 
 impl GitMasterApp {
@@ -46,6 +52,12 @@ impl GitMasterApp {
             context_menu: None,
             status_message: None,
             busy: false,
+            #[cfg(feature = "test-rpc")]
+            bounds_registry: Default::default(),
+            #[cfg(feature = "test-rpc")]
+            tree_provider: Default::default(),
+            #[cfg(feature = "test-rpc")]
+            command_queue: Default::default(),
         }
     }
 
@@ -124,6 +136,16 @@ impl GitMasterApp {
         self.status_message = Some(msg.into());
     }
 
+    #[cfg(feature = "test-rpc")]
+    pub fn track(&self, id: &str, element: impl IntoElement) -> AnyElement {
+        crate::test_rpc::tracked::tracked(id, element, &self.bounds_registry).into_any_element()
+    }
+
+    #[cfg(not(feature = "test-rpc"))]
+    pub fn track(&self, _id: &str, element: impl IntoElement) -> AnyElement {
+        element.into_any_element()
+    }
+
     pub fn refresh_repo(&mut self, index: usize) {
         if let Some(repo) = self.repos.get(index) {
             if let Some(info) = crate::git_ops::build_repo_info(&repo.path) {
@@ -135,21 +157,71 @@ impl GitMasterApp {
 
 impl Render for GitMasterApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
-        div()
+        #[cfg(feature = "test-rpc")]
+        {
+            cx.on_next_frame(window, |this, _window, cx| {
+                let cmds: Vec<_> = this
+                    .command_queue
+                    .lock()
+                    .ok()
+                    .map(|mut q| q.drain(..).collect())
+                    .unwrap_or_default();
+                let mut changed = false;
+                for cmd in cmds {
+                    match cmd {
+                        crate::test_rpc::server::TestCommand::SelectRepo(i) => {
+                            if let Some(repo) = this.repos.get(i) {
+                                let path = repo.path.clone();
+                                this.begin_select(i);
+                                let detail = crate::git_ops::get_repo_detail(&path);
+                                let log = crate::git_ops::get_commit_log(&path, 200);
+                                this.apply_detail(i, detail, log);
+                                changed = true;
+                            }
+                        }
+                        crate::test_rpc::server::TestCommand::SetTab(ref tab) => {
+                            match tab.as_str() {
+                                "info" => this.set_tab(DetailTab::Info),
+                                "log" => this.set_tab(DetailTab::GitLog),
+                                _ => {}
+                            }
+                            changed = true;
+                        }
+                    }
+                }
+                if changed {
+                    cx.notify();
+                }
+                let tree = this.build_view_tree();
+                if let Ok(mut guard) = this.tree_provider.lock() {
+                    *guard = Some(tree);
+                }
+            });
+        }
+
+        let top_bar = self.render_top_bar(window, cx);
+        let repo_list = self.render_repo_list(window, cx);
+        let detail_panel = self.render_detail_panel(window, cx);
+        let context_menu = self.render_context_menu(window, cx);
+
+        let main_content = div()
+            .flex()
+            .flex_row()
+            .flex_grow()
+            .child(self.track("repo-list-panel", repo_list))
+            .children(detail_panel.map(|p| self.track("detail-panel", p)));
+        let main_content = self.track("main-content", main_content);
+
+        let root = div()
             .flex()
             .flex_col()
             .size_full()
             .bg(rgb(theme::BG_BASE))
             .text_color(rgb(theme::TEXT_PRIMARY))
-            .child(self.render_top_bar(window, cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_grow()
-                    .child(self.render_repo_list(window, cx))
-                    .children(self.render_detail_panel(window, cx)),
-            )
-            .children(self.render_context_menu(window, cx))
+            .child(self.track("top-bar", top_bar))
+            .child(main_content)
+            .children(context_menu.map(|m| self.track("context-menu", m)));
+
+        self.track("root", root)
     }
 }

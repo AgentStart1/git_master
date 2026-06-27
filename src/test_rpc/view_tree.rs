@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use gpui::{Bounds, Pixels};
 use serde::Serialize;
 
 use crate::app_state::{DetailTab, GitMasterApp};
@@ -11,12 +14,12 @@ pub struct Rect {
 }
 
 impl Rect {
-    fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+    fn from_gpui(bounds: &Bounds<Pixels>) -> Self {
         Self {
-            x,
-            y,
-            width,
-            height,
+            x: bounds.origin.x.into(),
+            y: bounds.origin.y.into(),
+            width: bounds.size.width.into(),
+            height: bounds.size.height.into(),
         }
     }
 }
@@ -62,8 +65,10 @@ impl ViewNode {
         self
     }
 
-    fn with_bounds(mut self, bounds: Rect) -> Self {
-        self.bounds = Some(bounds);
+    fn with_bounds_from(mut self, registry: &HashMap<String, Bounds<Pixels>>, id: &str) -> Self {
+        if let Some(b) = registry.get(id) {
+            self.bounds = Some(Rect::from_gpui(b));
+        }
         self
     }
 
@@ -78,23 +83,19 @@ impl ViewNode {
     }
 }
 
-const WINDOW_W: f32 = 1200.0;
-const WINDOW_H: f32 = 800.0;
-const TOP_BAR_H: f32 = 44.0;
-const REPO_LIST_W: f32 = 280.0;
-const REPO_ITEM_H: f32 = 40.0;
-const TAB_BAR_H: f32 = 36.0;
-const LOG_ENTRY_H: f32 = 40.0;
-
 impl GitMasterApp {
     pub fn build_view_tree(&self) -> ViewNode {
-        let top_bar = self.build_top_bar_node();
-        let repo_list = self.build_repo_list_node();
-        let detail_panel = self.build_detail_panel_node();
+        let reg = self.bounds_registry.lock().ok();
+        let empty = HashMap::new();
+        let reg = reg.as_deref().unwrap_or(&empty);
+
+        let top_bar = self.build_top_bar_node(reg);
+        let repo_list = self.build_repo_list_node(reg);
+        let detail_panel = self.build_detail_panel_node(reg);
 
         let mut main_content = ViewNode::new("panel")
             .with_id("main-content")
-            .with_bounds(Rect::new(0.0, TOP_BAR_H, WINDOW_W, WINDOW_H - TOP_BAR_H))
+            .with_bounds_from(reg, "main-content")
             .with_child(repo_list);
 
         if let Some(panel) = detail_panel {
@@ -103,18 +104,18 @@ impl GitMasterApp {
 
         let mut root = ViewNode::new("window")
             .with_id("root")
-            .with_bounds(Rect::new(0.0, 0.0, WINDOW_W, WINDOW_H))
+            .with_bounds_from(reg, "root")
             .with_child(top_bar)
             .with_child(main_content);
 
-        if let Some(menu) = self.build_context_menu_node() {
+        if let Some(menu) = self.build_context_menu_node(reg) {
             root = root.with_child(menu);
         }
 
         root
     }
 
-    fn build_top_bar_node(&self) -> ViewNode {
+    fn build_top_bar_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> ViewNode {
         let dir_label = self
             .parent_dir
             .as_ref()
@@ -123,7 +124,7 @@ impl GitMasterApp {
 
         let mut bar = ViewNode::new("panel")
             .with_id("top-bar")
-            .with_bounds(Rect::new(0.0, 0.0, WINDOW_W, TOP_BAR_H))
+            .with_bounds_from(reg, "top-bar")
             .with_child(ViewNode::new("text").with_text(&dir_label));
 
         if let Some(msg) = &self.status_message {
@@ -135,16 +136,16 @@ impl GitMasterApp {
                 .with_id("change-dir-btn")
                 .with_text("Open Directory")
                 .with_interactive()
-                .with_bounds(Rect::new(WINDOW_W - 130.0, 6.0, 118.0, 32.0)),
+                .with_bounds_from(reg, "change-dir-btn"),
         );
 
         bar
     }
 
-    fn build_repo_list_node(&self) -> ViewNode {
+    fn build_repo_list_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> ViewNode {
         let mut list = ViewNode::new("panel")
             .with_id("repo-list")
-            .with_bounds(Rect::new(0.0, TOP_BAR_H, REPO_LIST_W, WINDOW_H - TOP_BAR_H));
+            .with_bounds_from(reg, "repo-list-panel");
 
         if self.scanning {
             list = list.with_child(ViewNode::new("text").with_text("Scanning…"));
@@ -155,8 +156,7 @@ impl GitMasterApp {
             .iter()
             .enumerate()
             .map(|(i, repo)| {
-                let y = TOP_BAR_H + (i as f32) * REPO_ITEM_H;
-
+                let id = format!("repo-{i}");
                 let dirty_text = if repo.is_dirty { "●" } else { "✓" };
                 let ab = if repo.ahead > 0 || repo.behind > 0 {
                     Some(format!("↑{} ↓{}", repo.ahead, repo.behind))
@@ -165,9 +165,9 @@ impl GitMasterApp {
                 };
 
                 let mut item = ViewNode::new("list-item")
-                    .with_id(&format!("repo-{i}"))
+                    .with_id(&id)
                     .with_interactive()
-                    .with_bounds(Rect::new(0.0, y, REPO_LIST_W, REPO_ITEM_H))
+                    .with_bounds_from(reg, &id)
                     .with_child(ViewNode::new("text").with_text(&repo.name))
                     .with_child(ViewNode::new("text").with_text(&repo.current_branch))
                     .with_child(ViewNode::new("text").with_text(dirty_text));
@@ -183,32 +183,28 @@ impl GitMasterApp {
         list.with_children(items)
     }
 
-    fn build_detail_panel_node(&self) -> Option<ViewNode> {
+    fn build_detail_panel_node(
+        &self,
+        reg: &HashMap<String, Bounds<Pixels>>,
+    ) -> Option<ViewNode> {
         self.selected_index?;
-
-        let panel_x = REPO_LIST_W;
-        let panel_w = WINDOW_W - REPO_LIST_W;
 
         let info_tab = ViewNode::new("tab")
             .with_id("tab-info")
             .with_text("Info")
             .with_interactive()
-            .with_bounds(Rect::new(panel_x, TOP_BAR_H, 60.0, TAB_BAR_H));
+            .with_bounds_from(reg, "tab-info");
 
         let log_tab = ViewNode::new("tab")
             .with_id("tab-log")
             .with_text("Git Log")
             .with_interactive()
-            .with_bounds(Rect::new(panel_x + 60.0, TOP_BAR_H, 80.0, TAB_BAR_H));
+            .with_bounds_from(reg, "tab-log");
 
         let tab_bar = ViewNode::new("panel")
             .with_id("tab-bar")
-            .with_bounds(Rect::new(panel_x, TOP_BAR_H, panel_w, TAB_BAR_H))
             .with_child(info_tab)
             .with_child(log_tab);
-
-        let content_y = TOP_BAR_H + TAB_BAR_H;
-        let content_h = WINDOW_H - TOP_BAR_H - TAB_BAR_H;
 
         let body = if self.loading_detail {
             ViewNode::new("text").with_text("Loading…")
@@ -223,12 +219,11 @@ impl GitMasterApp {
 
         let panel = ViewNode::new("panel")
             .with_id("detail-panel")
-            .with_bounds(Rect::new(panel_x, TOP_BAR_H, panel_w, WINDOW_H - TOP_BAR_H))
+            .with_bounds_from(reg, "detail-panel")
             .with_child(tab_bar)
             .with_child(
                 ViewNode::new("panel")
                     .with_id("detail-content")
-                    .with_bounds(Rect::new(panel_x, content_y, panel_w, content_h))
                     .with_child(body),
             );
 
@@ -247,20 +242,15 @@ impl GitMasterApp {
 
         ViewNode::new("panel")
             .with_id("info-content")
-            .with_child(
-                ViewNode::new("label")
-                    .with_text(&format!("Path: {}", detail.path)),
-            )
+            .with_child(ViewNode::new("label").with_text(&format!("Path: {}", detail.path)))
             .with_child(
                 ViewNode::new("label")
                     .with_text(&format!("Branch: {}", detail.current_branch)),
             )
-            .with_child(
-                ViewNode::new("label").with_text(&format!(
-                    "Remote: {}",
-                    detail.remote_url.as_deref().unwrap_or("(none)")
-                )),
-            )
+            .with_child(ViewNode::new("label").with_text(&format!(
+                "Remote: {}",
+                detail.remote_url.as_deref().unwrap_or("(none)")
+            )))
             .with_child(
                 ViewNode::new("label")
                     .with_text(&format!("File Status: {status_text}")),
@@ -271,16 +261,8 @@ impl GitMasterApp {
         let entries: Vec<ViewNode> = self
             .log_entries
             .iter()
-            .enumerate()
-            .map(|(i, entry)| {
-                let y = TOP_BAR_H + TAB_BAR_H + (i as f32) * LOG_ENTRY_H;
+            .map(|entry| {
                 ViewNode::new("list-item")
-                    .with_bounds(Rect::new(
-                        REPO_LIST_W,
-                        y,
-                        WINDOW_W - REPO_LIST_W,
-                        LOG_ENTRY_H,
-                    ))
                     .with_child(ViewNode::new("text").with_text(&entry.hash))
                     .with_child(ViewNode::new("text").with_text(&entry.message))
                     .with_child(
@@ -295,10 +277,11 @@ impl GitMasterApp {
             .with_children(entries)
     }
 
-    fn build_context_menu_node(&self) -> Option<ViewNode> {
+    fn build_context_menu_node(
+        &self,
+        reg: &HashMap<String, Bounds<Pixels>>,
+    ) -> Option<ViewNode> {
         let menu = self.context_menu.as_ref()?;
-        let pos_x: f32 = menu.position.x.into();
-        let pos_y: f32 = menu.position.y.into();
         let current_branch = self
             .repos
             .get(menu.repo_index)
@@ -307,7 +290,7 @@ impl GitMasterApp {
 
         let mut node = ViewNode::new("menu")
             .with_id("context-menu")
-            .with_bounds(Rect::new(pos_x, pos_y, 200.0, 0.0))
+            .with_bounds_from(reg, "context-menu")
             .with_child(
                 ViewNode::new("menu-item")
                     .with_id("ctx-switch-branch")
@@ -316,7 +299,8 @@ impl GitMasterApp {
                     } else {
                         "▸ Switch Branch"
                     })
-                    .with_interactive(),
+                    .with_interactive()
+                    .with_bounds_from(reg, "ctx-switch-branch"),
             );
 
         if menu.show_branches {
@@ -325,10 +309,12 @@ impl GitMasterApp {
                 .iter()
                 .filter(|b| b.as_str() != current_branch)
                 .map(|b| {
+                    let id = format!("ctx-branch-{b}");
                     ViewNode::new("menu-item")
-                        .with_id(&format!("ctx-branch-{b}"))
+                        .with_id(&id)
                         .with_text(b)
                         .with_interactive()
+                        .with_bounds_from(reg, &id)
                 })
                 .collect();
             node = node.with_children(branch_items);
@@ -339,13 +325,15 @@ impl GitMasterApp {
                 ViewNode::new("menu-item")
                     .with_id("ctx-pull-rebase")
                     .with_text("Pull --rebase")
-                    .with_interactive(),
+                    .with_interactive()
+                    .with_bounds_from(reg, "ctx-pull-rebase"),
             )
             .with_child(
                 ViewNode::new("menu-item")
                     .with_id("ctx-push")
                     .with_text("Push")
-                    .with_interactive(),
+                    .with_interactive()
+                    .with_bounds_from(reg, "ctx-push"),
             );
 
         Some(node)

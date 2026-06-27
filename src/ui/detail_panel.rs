@@ -9,7 +9,7 @@ impl GitMasterApp {
         &self,
         _window: &mut Window,
         cx: &mut Context<'_, Self>,
-    ) -> Option<Div> {
+    ) -> Option<AnyElement> {
         self.selected_index?;
 
         let body = if self.loading_detail {
@@ -40,11 +40,12 @@ impl GitMasterApp {
                 .flex_grow()
                 .bg(rgb(theme::BG_BASE))
                 .child(self.render_tabs(cx))
-                .child(body),
+                .child(body)
+                .into_any_element(),
         )
     }
 
-    fn render_tabs(&self, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    fn render_tabs(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let info_bg = if self.active_tab == DetailTab::Info {
             rgb(theme::BG_OVERLAY)
         } else {
@@ -56,40 +57,41 @@ impl GitMasterApp {
             rgb(theme::BG_SURFACE)
         };
 
+        let tab_info = div()
+            .id("tab-info")
+            .px(px(16.0))
+            .py(px(8.0))
+            .cursor_pointer()
+            .bg(info_bg)
+            .text_sm()
+            .child("Info")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.set_tab(DetailTab::Info);
+                cx.notify();
+            }));
+
+        let tab_log = div()
+            .id("tab-log")
+            .px(px(16.0))
+            .py(px(8.0))
+            .cursor_pointer()
+            .bg(log_bg)
+            .text_sm()
+            .child("Git Log")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.set_tab(DetailTab::GitLog);
+                cx.notify();
+            }));
+
         div()
             .flex()
             .flex_row()
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
             .border_color(rgb(theme::BG_OVERLAY))
-            .child(
-                div()
-                    .id("tab-info")
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .cursor_pointer()
-                    .bg(info_bg)
-                    .text_sm()
-                    .child("Info")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_tab(DetailTab::Info);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("tab-log")
-                    .px(px(16.0))
-                    .py(px(8.0))
-                    .cursor_pointer()
-                    .bg(log_bg)
-                    .text_sm()
-                    .child("Git Log")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_tab(DetailTab::GitLog);
-                        cx.notify();
-                    })),
-            )
+            .child(self.track("tab-info", tab_info))
+            .child(self.track("tab-log", tab_log))
+            .into_any_element()
     }
 
     fn render_info_tab(&self, detail: &RepoDetail) -> impl IntoElement {

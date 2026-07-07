@@ -1,17 +1,20 @@
 use gpui::*;
 
-use crate::app_state::GitMasterApp;
+use crate::app_state::{GitMasterApp, RepoSelection};
 use crate::git_ops;
+use crate::models::SubmoduleDetail;
 use crate::ui::theme;
 
 impl GitMasterApp {
-    pub fn render_repo_list(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) -> AnyElement {
-        let repo_items: Vec<AnyElement> = self.repos.iter().enumerate().map(|(i, repo)| {
-                let is_selected = self.selected_index == Some(i);
+    pub fn render_repo_list(&self, _window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
+        let repo_items: Vec<AnyElement> = self
+            .repos
+            .iter()
+            .enumerate()
+            .flat_map(|(i, repo)| {
+                let is_selected = self.selected == Some(RepoSelection::Repo(i));
+                let is_expanded = self.expanded_repos.contains(&i);
+                let has_submodules = !repo.submodules.is_empty();
                 let bg = if is_selected {
                     rgb(theme::BG_OVERLAY)
                 } else {
@@ -60,7 +63,12 @@ impl GitMasterApp {
                                 .await;
                             entity
                                 .update(cx, |this, cx| {
-                                    this.apply_detail(i, detail, log_entries);
+                                    this.apply_detail(
+                                        RepoSelection::Repo(i),
+                                        detail,
+                                        None,
+                                        log_entries,
+                                    );
                                     cx.notify();
                                 })
                                 .ok();
@@ -81,9 +89,7 @@ impl GitMasterApp {
                             cx.spawn(async move |entity, cx| {
                                 let branches = cx
                                     .background_executor()
-                                    .spawn(async move {
-                                        git_ops::list_local_branches(&path)
-                                    })
+                                    .spawn(async move { git_ops::list_local_branches(&path) })
                                     .await;
                                 entity
                                     .update(cx, |this, cx| {
@@ -94,6 +100,29 @@ impl GitMasterApp {
                             })
                             .detach();
                         }),
+                    )
+                    .child(
+                        div()
+                            .id(ElementId::Name(format!("repo-{i}-toggle").into()))
+                            .w(px(14.0))
+                            .text_xs()
+                            .text_color(rgb(theme::TEXT_SUBTLE))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                if this
+                                    .repos
+                                    .get(i)
+                                    .is_some_and(|repo| !repo.submodules.is_empty())
+                                {
+                                    this.toggle_repo_expanded(i);
+                                    cx.notify();
+                                }
+                            }))
+                            .child(if has_submodules {
+                                if is_expanded { "▾" } else { "▸" }
+                            } else {
+                                ""
+                            }),
                     )
                     .child(
                         div()
@@ -121,8 +150,131 @@ impl GitMasterApp {
                             })),
                     );
 
-                self.track(&format!("repo-{i}"), item)
-            }).collect();
+                let mut items = vec![self.track(&format!("repo-{i}"), item)];
+                if is_expanded {
+                    items.extend(repo.submodules.iter().enumerate().map(|(j, submodule)| {
+                        let id = format!("repo-{i}-submodule-{j}");
+                        let is_selected = self.selected
+                            == Some(RepoSelection::Submodule {
+                                repo_index: i,
+                                submodule_index: j,
+                            });
+                        let bg = if is_selected {
+                            rgb(theme::BG_OVERLAY)
+                        } else {
+                            rgb(theme::BG_BASE)
+                        };
+                        let dirty_color = if submodule.is_dirty {
+                            rgb(theme::RED)
+                        } else if submodule.is_initialized {
+                            rgb(theme::GREEN)
+                        } else {
+                            rgb(theme::YELLOW)
+                        };
+                        let dirty_icon = if submodule.is_dirty {
+                            "●"
+                        } else if submodule.is_initialized {
+                            "✓"
+                        } else {
+                            "!"
+                        };
+                        let ahead_behind: Option<String> =
+                            if submodule.ahead > 0 || submodule.behind > 0 {
+                                Some(format!("↑{} ↓{}", submodule.ahead, submodule.behind))
+                            } else {
+                                None
+                            };
+                        let path = submodule.path.clone();
+                        let submodule_detail = SubmoduleDetail {
+                            name: submodule.name.clone(),
+                            path: submodule.path.display().to_string(),
+                            url: submodule.url.clone(),
+                            is_initialized: submodule.is_initialized,
+                        };
+                        let is_initialized = submodule.is_initialized;
+
+                        let item = div()
+                            .id(ElementId::Name(id.clone().into()))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .pl(px(34.0))
+                            .pr(px(10.0))
+                            .py(px(6.0))
+                            .bg(bg)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _event, _window, cx| {
+                                this.begin_select_submodule(i, j);
+                                cx.notify();
+                                let path = path.clone();
+                                let submodule_detail = submodule_detail.clone();
+                                cx.spawn(async move |entity, cx| {
+                                    let (detail, log_entries) = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            if is_initialized {
+                                                (
+                                                    git_ops::get_repo_detail(&path),
+                                                    git_ops::get_commit_log(&path, 200),
+                                                )
+                                            } else {
+                                                (None, Vec::new())
+                                            }
+                                        })
+                                        .await;
+                                    entity
+                                        .update(cx, |this, cx| {
+                                            this.apply_detail(
+                                                RepoSelection::Submodule {
+                                                    repo_index: i,
+                                                    submodule_index: j,
+                                                },
+                                                detail,
+                                                Some(submodule_detail),
+                                                log_entries,
+                                            );
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                })
+                                .detach();
+                            }))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_grow()
+                                    .overflow_x_hidden()
+                                    .child(div().text_sm().child(submodule.name.clone()))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(theme::TEXT_SUBTLE))
+                                            .child(submodule.current_branch.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(
+                                        div().text_xs().text_color(dirty_color).child(dirty_icon),
+                                    )
+                                    .children(ahead_behind.map(|ab| {
+                                        div().text_xs().text_color(rgb(theme::YELLOW)).child(ab)
+                                    })),
+                            );
+
+                        self.track(&id, item)
+                    }));
+                }
+
+                items
+            })
+            .collect();
 
         div()
             .id("repo-list")
@@ -259,12 +411,7 @@ impl GitMasterApp {
         Some(deferred(anchored().position(position).child(menu_panel)).into_any_element())
     }
 
-    fn do_checkout(
-        &mut self,
-        repo_index: usize,
-        branch: String,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn do_checkout(&mut self, repo_index: usize, branch: String, cx: &mut Context<'_, Self>) {
         let Some(repo) = self.repos.get(repo_index) else {
             return;
         };
@@ -293,11 +440,7 @@ impl GitMasterApp {
         .detach();
     }
 
-    fn do_pull_rebase(
-        &mut self,
-        repo_index: usize,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn do_pull_rebase(&mut self, repo_index: usize, cx: &mut Context<'_, Self>) {
         let Some(repo) = self.repos.get(repo_index) else {
             return;
         };
@@ -331,12 +474,7 @@ impl GitMasterApp {
         .detach();
     }
 
-    fn do_push(
-        &mut self,
-        repo_index: usize,
-        window: &mut Window,
-        cx: &mut Context<'_, Self>,
-    ) {
+    fn do_push(&mut self, repo_index: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
         let Some(repo) = self.repos.get(repo_index) else {
             return;
         };

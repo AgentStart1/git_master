@@ -4,7 +4,7 @@ use std::process::Command;
 use chrono::TimeZone;
 use git2::{BranchType, Repository, Sort, StatusOptions};
 
-use crate::models::{FileStatusSummary, LogEntry, RepoDetail, RepoInfo};
+use crate::models::{FileStatusSummary, LogEntry, RepoDetail, RepoInfo, SubmoduleInfo};
 
 pub fn scan_repos(parent_dir: &Path) -> Vec<RepoInfo> {
     let mut repos = Vec::new();
@@ -35,6 +35,7 @@ pub fn build_repo_info(path: &Path) -> Option<RepoInfo> {
     let is_dirty = check_dirty(&repo);
     let current_branch = get_branch_name(&repo);
     let (ahead, behind) = get_ahead_behind(&repo, &current_branch);
+    let submodules = list_submodules(path, &repo);
 
     Some(RepoInfo {
         name,
@@ -43,6 +44,7 @@ pub fn build_repo_info(path: &Path) -> Option<RepoInfo> {
         ahead,
         behind,
         current_branch,
+        submodules,
     })
 }
 
@@ -103,6 +105,16 @@ pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, Strin
     run_git(repo_path, &["push", "-u", "origin", branch])
 }
 
+pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, String> {
+    let relative_path = relative_path
+        .to_str()
+        .ok_or_else(|| "Submodule path is not valid UTF-8".to_string())?;
+    run_git(
+        repo_path,
+        &["submodule", "update", "--init", "--", relative_path],
+    )
+}
+
 pub fn get_repo_detail(repo_path: &Path) -> Option<RepoDetail> {
     let repo = Repository::open(repo_path).ok()?;
     let current_branch = get_branch_name(&repo);
@@ -115,6 +127,56 @@ pub fn get_repo_detail(repo_path: &Path) -> Option<RepoDetail> {
         remote_url,
         file_status,
     })
+}
+
+fn list_submodules(repo_path: &Path, repo: &Repository) -> Vec<SubmoduleInfo> {
+    let mut submodules: Vec<SubmoduleInfo> = repo
+        .submodules()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|submodule| {
+            let relative_path = submodule.path().to_path_buf();
+            let path = repo_path.join(&relative_path);
+            let name = submodule
+                .name()
+                .ok()
+                .map(String::from)
+                .or_else(|| {
+                    relative_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| relative_path.display().to_string());
+            let url = submodule.url().ok().flatten().map(String::from);
+            let repo = Repository::open(&path).ok();
+            let is_initialized = repo.is_some();
+            let (current_branch, is_dirty, ahead, behind) = repo
+                .as_ref()
+                .map(|repo| {
+                    let current_branch = get_branch_name(repo);
+                    let is_dirty = check_dirty(repo);
+                    let (ahead, behind) = get_ahead_behind(repo, &current_branch);
+                    (current_branch, is_dirty, ahead, behind)
+                })
+                .unwrap_or_else(|| ("Not initialized".to_string(), false, 0, 0));
+
+            Some(SubmoduleInfo {
+                name,
+                path,
+                relative_path,
+                url,
+                is_initialized,
+                is_dirty,
+                ahead,
+                behind,
+                current_branch,
+            })
+        })
+        .collect();
+
+    submodules.sort_by_cached_key(|s| s.name.to_lowercase());
+    submodules
 }
 
 pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
@@ -137,11 +199,7 @@ pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
         };
         let hash = commit.id().to_string();
         let hash = hash[..7.min(hash.len())].to_string();
-        let author = commit
-            .author()
-            .name()
-            .unwrap_or("unknown")
-            .to_string();
+        let author = commit.author().name().unwrap_or("unknown").to_string();
         let time = commit.time();
         let date = chrono::Utc
             .timestamp_opt(time.seconds(), 0)

@@ -11,11 +11,7 @@ pub struct Tracked {
     registry: BoundsRegistry,
 }
 
-pub fn tracked(
-    id: &str,
-    element: impl IntoElement,
-    registry: &BoundsRegistry,
-) -> Tracked {
+pub fn tracked(id: &str, element: impl IntoElement, registry: &BoundsRegistry) -> Tracked {
     Tracked {
         track_id: id.to_string(),
         inner: element.into_any_element(),

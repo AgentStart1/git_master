@@ -128,7 +128,11 @@ impl GitMasterApp {
             .with_child(ViewNode::new("text").with_text(&dir_label));
 
         if let Some(msg) = &self.status_message {
-            bar = bar.with_child(ViewNode::new("text").with_id("status-message").with_text(msg));
+            bar = bar.with_child(
+                ViewNode::new("text")
+                    .with_id("status-message")
+                    .with_text(msg),
+            );
         }
 
         bar = bar.with_child(
@@ -155,7 +159,7 @@ impl GitMasterApp {
             .repos
             .iter()
             .enumerate()
-            .map(|(i, repo)| {
+            .flat_map(|(i, repo)| {
                 let id = format!("repo-{i}");
                 let dirty_text = if repo.is_dirty { "●" } else { "✓" };
                 let ab = if repo.ahead > 0 || repo.behind > 0 {
@@ -176,18 +180,45 @@ impl GitMasterApp {
                     item = item.with_child(ViewNode::new("text").with_text(&ab));
                 }
 
-                item
+                let mut items = vec![item];
+                if self.expanded_repos.contains(&i) {
+                    items.extend(repo.submodules.iter().enumerate().map(|(j, submodule)| {
+                        let id = format!("repo-{i}-submodule-{j}");
+                        let dirty_text = if submodule.is_dirty {
+                            "●"
+                        } else if submodule.is_initialized {
+                            "✓"
+                        } else {
+                            "!"
+                        };
+                        let mut item = ViewNode::new("list-item")
+                            .with_id(&id)
+                            .with_interactive()
+                            .with_bounds_from(reg, &id)
+                            .with_child(ViewNode::new("text").with_text(&submodule.name))
+                            .with_child(ViewNode::new("text").with_text(&submodule.current_branch))
+                            .with_child(ViewNode::new("text").with_text(dirty_text));
+
+                        if submodule.ahead > 0 || submodule.behind > 0 {
+                            item =
+                                item.with_child(ViewNode::new("text").with_text(&format!(
+                                    "↑{} ↓{}",
+                                    submodule.ahead, submodule.behind
+                                )));
+                        }
+                        item
+                    }));
+                }
+
+                items
             })
             .collect();
 
         list.with_children(items)
     }
 
-    fn build_detail_panel_node(
-        &self,
-        reg: &HashMap<String, Bounds<Pixels>>,
-    ) -> Option<ViewNode> {
-        self.selected_index?;
+    fn build_detail_panel_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> Option<ViewNode> {
+        self.selected.as_ref()?;
 
         let info_tab = ViewNode::new("tab")
             .with_id("tab-info")
@@ -208,6 +239,10 @@ impl GitMasterApp {
 
         let body = if self.loading_detail {
             ViewNode::new("text").with_text("Loading…")
+        } else if let Some(submodule) = &self.submodule_detail
+            && !submodule.is_initialized
+        {
+            self.build_uninitialized_submodule_node(submodule)
         } else if let Some(detail) = &self.detail {
             match self.active_tab {
                 DetailTab::Info => self.build_info_node(detail),
@@ -244,16 +279,33 @@ impl GitMasterApp {
             .with_id("info-content")
             .with_child(ViewNode::new("label").with_text(&format!("Path: {}", detail.path)))
             .with_child(
-                ViewNode::new("label")
-                    .with_text(&format!("Branch: {}", detail.current_branch)),
+                ViewNode::new("label").with_text(&format!("Branch: {}", detail.current_branch)),
             )
             .with_child(ViewNode::new("label").with_text(&format!(
                 "Remote: {}",
                 detail.remote_url.as_deref().unwrap_or("(none)")
             )))
+            .with_child(ViewNode::new("label").with_text(&format!("File Status: {status_text}")))
+    }
+
+    fn build_uninitialized_submodule_node(
+        &self,
+        detail: &crate::models::SubmoduleDetail,
+    ) -> ViewNode {
+        ViewNode::new("panel")
+            .with_id("submodule-info-content")
+            .with_child(ViewNode::new("label").with_text(&format!("Name: {}", detail.name)))
+            .with_child(ViewNode::new("label").with_text(&format!("Path: {}", detail.path)))
+            .with_child(ViewNode::new("label").with_text(&format!(
+                "URL: {}",
+                detail.url.as_deref().unwrap_or("(none)")
+            )))
+            .with_child(ViewNode::new("label").with_text("Status: Not initialized"))
             .with_child(
-                ViewNode::new("label")
-                    .with_text(&format!("File Status: {status_text}")),
+                ViewNode::new("button")
+                    .with_id("init-submodule-btn")
+                    .with_text("Initialize Submodule")
+                    .with_interactive(),
             )
     }
 
@@ -277,10 +329,7 @@ impl GitMasterApp {
             .with_children(entries)
     }
 
-    fn build_context_menu_node(
-        &self,
-        reg: &HashMap<String, Bounds<Pixels>>,
-    ) -> Option<ViewNode> {
+    fn build_context_menu_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> Option<ViewNode> {
         let menu = self.context_menu.as_ref()?;
         let current_branch = self
             .repos

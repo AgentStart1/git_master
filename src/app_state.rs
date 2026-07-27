@@ -200,6 +200,94 @@ impl GitMasterApp {
             _ => None,
         }
     }
+
+    #[cfg(feature = "test-rpc")]
+    pub fn process_test_commands(&mut self) -> bool {
+        let cmds: Vec<_> = self
+            .command_queue
+            .lock()
+            .ok()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default();
+        let mut changed = false;
+        for cmd in cmds {
+            match cmd {
+                crate::test_rpc::server::TestCommand::SelectRepo(i) => {
+                    if let Some(repo) = self.repos.get(i) {
+                        let path = repo.path.clone();
+                        self.begin_select(i);
+                        let detail = crate::git_ops::get_repo_detail(&path);
+                        let log = crate::git_ops::get_commit_log(&path, 200);
+                        self.apply_detail(RepoSelection::Repo(i), detail, None, log);
+                        changed = true;
+                    }
+                }
+                crate::test_rpc::server::TestCommand::ToggleRepo(i) => {
+                    self.toggle_repo_expanded(i);
+                    changed = true;
+                }
+                crate::test_rpc::server::TestCommand::SelectSubmodule {
+                    repo_index,
+                    submodule_index,
+                } => {
+                    if let Some((path, submodule_detail, is_initialized)) = self
+                        .repos
+                        .get(repo_index)
+                        .and_then(|repo| repo.submodules.get(submodule_index))
+                        .map(|submodule| {
+                            (
+                                submodule.path.clone(),
+                                Some(SubmoduleDetail {
+                                    name: submodule.name.clone(),
+                                    path: submodule.path.display().to_string(),
+                                    url: submodule.url.clone(),
+                                    is_initialized: submodule.is_initialized,
+                                }),
+                                submodule.is_initialized,
+                            )
+                        })
+                    {
+                        self.begin_select_submodule(repo_index, submodule_index);
+                        let detail = is_initialized
+                            .then(|| crate::git_ops::get_repo_detail(&path))
+                            .flatten();
+                        let log = if is_initialized {
+                            crate::git_ops::get_commit_log(&path, 200)
+                        } else {
+                            Vec::new()
+                        };
+                        self.apply_detail(
+                            RepoSelection::Submodule {
+                                repo_index,
+                                submodule_index,
+                            },
+                            detail,
+                            submodule_detail,
+                            log,
+                        );
+                        changed = true;
+                    }
+                }
+                crate::test_rpc::server::TestCommand::SetTab(ref tab) => {
+                    match tab.as_str() {
+                        "info" => self.set_tab(DetailTab::Info),
+                        "log" => self.set_tab(DetailTab::GitLog),
+                        _ => {}
+                    }
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    #[cfg(feature = "test-rpc")]
+    pub fn publish_test_view_tree(&self) {
+        let tree = self.build_view_tree();
+        if let Ok(mut guard) = self.tree_provider.lock() {
+            *guard = Some(tree);
+        }
+    }
 }
 
 impl Render for GitMasterApp {
@@ -207,88 +295,11 @@ impl Render for GitMasterApp {
         #[cfg(feature = "test-rpc")]
         {
             cx.on_next_frame(window, |this, _window, cx| {
-                let cmds: Vec<_> = this
-                    .command_queue
-                    .lock()
-                    .ok()
-                    .map(|mut q| q.drain(..).collect())
-                    .unwrap_or_default();
-                let mut changed = false;
-                for cmd in cmds {
-                    match cmd {
-                        crate::test_rpc::server::TestCommand::SelectRepo(i) => {
-                            if let Some(repo) = this.repos.get(i) {
-                                let path = repo.path.clone();
-                                this.begin_select(i);
-                                let detail = crate::git_ops::get_repo_detail(&path);
-                                let log = crate::git_ops::get_commit_log(&path, 200);
-                                this.apply_detail(RepoSelection::Repo(i), detail, None, log);
-                                changed = true;
-                            }
-                        }
-                        crate::test_rpc::server::TestCommand::ToggleRepo(i) => {
-                            this.toggle_repo_expanded(i);
-                            changed = true;
-                        }
-                        crate::test_rpc::server::TestCommand::SelectSubmodule {
-                            repo_index,
-                            submodule_index,
-                        } => {
-                            if let Some((path, submodule_detail, is_initialized)) = this
-                                .repos
-                                .get(repo_index)
-                                .and_then(|repo| repo.submodules.get(submodule_index))
-                                .map(|submodule| {
-                                    (
-                                        submodule.path.clone(),
-                                        Some(SubmoduleDetail {
-                                            name: submodule.name.clone(),
-                                            path: submodule.path.display().to_string(),
-                                            url: submodule.url.clone(),
-                                            is_initialized: submodule.is_initialized,
-                                        }),
-                                        submodule.is_initialized,
-                                    )
-                                })
-                            {
-                                this.begin_select_submodule(repo_index, submodule_index);
-                                let detail = is_initialized
-                                    .then(|| crate::git_ops::get_repo_detail(&path))
-                                    .flatten();
-                                let log = if is_initialized {
-                                    crate::git_ops::get_commit_log(&path, 200)
-                                } else {
-                                    Vec::new()
-                                };
-                                this.apply_detail(
-                                    RepoSelection::Submodule {
-                                        repo_index,
-                                        submodule_index,
-                                    },
-                                    detail,
-                                    submodule_detail,
-                                    log,
-                                );
-                                changed = true;
-                            }
-                        }
-                        crate::test_rpc::server::TestCommand::SetTab(ref tab) => {
-                            match tab.as_str() {
-                                "info" => this.set_tab(DetailTab::Info),
-                                "log" => this.set_tab(DetailTab::GitLog),
-                                _ => {}
-                            }
-                            changed = true;
-                        }
-                    }
-                }
+                let changed = this.process_test_commands();
                 if changed {
                     cx.notify();
                 }
-                let tree = this.build_view_tree();
-                if let Ok(mut guard) = this.tree_provider.lock() {
-                    *guard = Some(tree);
-                }
+                this.publish_test_view_tree();
             });
         }
 

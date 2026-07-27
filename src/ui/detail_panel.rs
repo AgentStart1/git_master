@@ -226,7 +226,8 @@ impl GitMasterApp {
         if self.busy {
             return;
         }
-        let Some((repo_index, submodule_index)) = self.selected_submodule() else {
+        let Some((repo_index, submodule_index, selected_relative_path)) = self.selected_submodule()
+        else {
             return;
         };
         let Some((repo_path, relative_path)) = self.repos.get(repo_index).and_then(|repo| {
@@ -257,10 +258,13 @@ impl GitMasterApp {
                                 this.set_status(format!("Submodule initialized: {msg}"));
                             }
                             this.refresh_repo(repo_index);
-                            if let Some(submodule) = this
-                                .repos
-                                .get(repo_index)
-                                .and_then(|repo| repo.submodules.get(submodule_index))
+                            let selected = this.selected_submodule();
+                            if let Some((repo_index, submodule_index, relative_path)) = selected
+                                && relative_path == selected_relative_path
+                                && let Some(submodule) = this
+                                    .repos
+                                    .get(repo_index)
+                                    .and_then(|repo| repo.submodules.get(submodule_index))
                             {
                                 let path = submodule.path.clone();
                                 let submodule_detail = Some(SubmoduleDetail {
@@ -269,17 +273,36 @@ impl GitMasterApp {
                                     url: submodule.url.clone(),
                                     is_initialized: submodule.is_initialized,
                                 });
-                                let detail = git_ops::get_repo_detail(&path);
-                                let log_entries = git_ops::get_commit_log(&path, 200);
-                                this.apply_detail(
-                                    RepoSelection::Submodule {
-                                        repo_index,
-                                        submodule_index,
-                                    },
-                                    detail,
-                                    submodule_detail,
-                                    log_entries,
-                                );
+                                let selection = RepoSelection::Submodule {
+                                    repo_index,
+                                    submodule_index,
+                                    relative_path,
+                                };
+                                this.loading_detail = true;
+                                cx.notify();
+                                cx.spawn(async move |entity, cx| {
+                                    let (detail, log_entries) = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            (
+                                                git_ops::get_repo_detail(&path),
+                                                git_ops::get_commit_log(&path, 200),
+                                            )
+                                        })
+                                        .await;
+                                    entity
+                                        .update(cx, |this, cx| {
+                                            this.apply_detail(
+                                                selection,
+                                                detail,
+                                                submodule_detail,
+                                                log_entries,
+                                            );
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                })
+                                .detach();
                             }
                         }
                         Err(e) => this.set_status(format!("Submodule init failed: {e}")),

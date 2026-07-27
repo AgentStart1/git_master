@@ -158,6 +158,7 @@ impl GitMasterApp {
                             == Some(RepoSelection::Submodule {
                                 repo_index: i,
                                 submodule_index: j,
+                                relative_path: submodule.relative_path.clone(),
                             });
                         let bg = if is_selected {
                             rgb(theme::BG_OVERLAY)
@@ -185,6 +186,7 @@ impl GitMasterApp {
                                 None
                             };
                         let path = submodule.path.clone();
+                        let relative_path = submodule.relative_path.clone();
                         let submodule_detail = SubmoduleDetail {
                             name: submodule.name.clone(),
                             path: submodule.path.display().to_string(),
@@ -205,9 +207,10 @@ impl GitMasterApp {
                             .bg(bg)
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _event, _window, cx| {
-                                this.begin_select_submodule(i, j);
+                                this.begin_select_submodule(i, j, relative_path.clone());
                                 cx.notify();
                                 let path = path.clone();
+                                let relative_path = relative_path.clone();
                                 let submodule_detail = submodule_detail.clone();
                                 cx.spawn(async move |entity, cx| {
                                     let (detail, log_entries) = cx
@@ -229,6 +232,7 @@ impl GitMasterApp {
                                                 RepoSelection::Submodule {
                                                     repo_index: i,
                                                     submodule_index: j,
+                                                    relative_path,
                                                 },
                                                 detail,
                                                 Some(submodule_detail),

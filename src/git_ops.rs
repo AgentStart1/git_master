@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
@@ -76,7 +77,11 @@ pub fn has_upstream(repo_path: &Path, branch_name: &str) -> bool {
     branch.upstream().is_ok()
 }
 
-fn run_git(repo_path: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git<I, S>(repo_path: &Path, args: I) -> Result<String, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let output = Command::new("git")
         .args(args)
         .current_dir(repo_path)
@@ -106,12 +111,15 @@ pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, Strin
 }
 
 pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, String> {
-    let relative_path = relative_path
-        .to_str()
-        .ok_or_else(|| "Submodule path is not valid UTF-8".to_string())?;
     run_git(
         repo_path,
-        &["submodule", "update", "--init", "--", relative_path],
+        [
+            OsStr::new("submodule"),
+            OsStr::new("update"),
+            OsStr::new("--init"),
+            OsStr::new("--"),
+            relative_path.as_os_str(),
+        ],
     )
 }
 

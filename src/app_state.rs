@@ -18,6 +18,7 @@ pub enum RepoSelection {
     Submodule {
         repo_index: usize,
         submodule_index: usize,
+        relative_path: PathBuf,
     },
 }
 
@@ -111,10 +112,16 @@ impl GitMasterApp {
         self.loading_detail = true;
     }
 
-    pub fn begin_select_submodule(&mut self, repo_index: usize, submodule_index: usize) {
+    pub fn begin_select_submodule(
+        &mut self,
+        repo_index: usize,
+        submodule_index: usize,
+        relative_path: PathBuf,
+    ) {
         self.selected = Some(RepoSelection::Submodule {
             repo_index,
             submodule_index,
+            relative_path,
         });
         self.active_tab = DetailTab::Info;
         self.detail = None;
@@ -187,16 +194,54 @@ impl GitMasterApp {
         if let Some(repo) = self.repos.get(index) {
             if let Some(info) = crate::git_ops::build_repo_info(&repo.path) {
                 self.repos[index] = info;
+                self.reconcile_submodule_selection(index);
             }
         }
     }
 
-    pub fn selected_submodule(&self) -> Option<(usize, usize)> {
-        match self.selected {
+    fn reconcile_submodule_selection(&mut self, refreshed_repo_index: usize) {
+        let Some(RepoSelection::Submodule {
+            repo_index,
+            relative_path,
+            ..
+        }) = self.selected.as_ref()
+        else {
+            return;
+        };
+        if *repo_index != refreshed_repo_index {
+            return;
+        }
+        let Some(new_index) = self.repos.get(*repo_index).and_then(|repo| {
+            repo.submodules
+                .iter()
+                .position(|submodule| submodule.relative_path == *relative_path)
+        }) else {
+            self.selected = None;
+            self.detail = None;
+            self.submodule_detail = None;
+            self.log_entries.clear();
+            self.loading_detail = false;
+            return;
+        };
+        self.selected = Some(RepoSelection::Submodule {
+            repo_index: *repo_index,
+            submodule_index: new_index,
+            relative_path: relative_path.clone(),
+        });
+    }
+
+    pub fn selected_submodule(&self) -> Option<(usize, usize, PathBuf)> {
+        match self.selected.as_ref() {
             Some(RepoSelection::Submodule {
                 repo_index,
                 submodule_index,
-            }) => Some((repo_index, submodule_index)),
+                relative_path,
+            }) => self
+                .repos
+                .get(*repo_index)
+                .and_then(|repo| repo.submodules.get(*submodule_index))
+                .filter(|submodule| submodule.relative_path == *relative_path)
+                .map(|_| (*repo_index, *submodule_index, relative_path.clone())),
             _ => None,
         }
     }
@@ -230,13 +275,14 @@ impl GitMasterApp {
                     repo_index,
                     submodule_index,
                 } => {
-                    if let Some((path, submodule_detail, is_initialized)) = self
+                    if let Some((path, relative_path, submodule_detail, is_initialized)) = self
                         .repos
                         .get(repo_index)
                         .and_then(|repo| repo.submodules.get(submodule_index))
                         .map(|submodule| {
                             (
                                 submodule.path.clone(),
+                                submodule.relative_path.clone(),
                                 Some(SubmoduleDetail {
                                     name: submodule.name.clone(),
                                     path: submodule.path.display().to_string(),
@@ -247,7 +293,11 @@ impl GitMasterApp {
                             )
                         })
                     {
-                        self.begin_select_submodule(repo_index, submodule_index);
+                        self.begin_select_submodule(
+                            repo_index,
+                            submodule_index,
+                            relative_path.clone(),
+                        );
                         let detail = is_initialized
                             .then(|| crate::git_ops::get_repo_detail(&path))
                             .flatten();
@@ -260,6 +310,7 @@ impl GitMasterApp {
                             RepoSelection::Submodule {
                                 repo_index,
                                 submodule_index,
+                                relative_path,
                             },
                             detail,
                             submodule_detail,

@@ -62,11 +62,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libvulkan-dev libwayland-dev libfontconfig-dev \
+            libvulkan-dev libwayland-dev libfontconfig-dev mesa-vulkan-drivers \
             xvfb netcat-openbsd
 
       - name: Build (test-rpc)
         run: cargo build --features test-rpc
 
       - name: Run E2E tests
-        run: xvfb-run bash tests/e2e_test.sh
+        run: |
+          xvfb-run -a bash tests/e2e_test.sh
+          xvfb-run -a bash tests/e2e_submodule_test.sh

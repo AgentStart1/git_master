@@ -25,37 +25,37 @@ impl GitMasterApp {
             .text_sm()
             .child("Open Directory")
             .on_click(cx.listener(|_this, _event, _window, cx| {
-                        let receiver = cx.prompt_for_paths(PathPromptOptions {
-                            files: false,
-                            directories: true,
-                            multiple: false,
-                            prompt: Some("Select parent directory".into()),
-                        });
-                        cx.spawn(async move |entity: WeakEntity<GitMasterApp>, cx| {
-                            if let Ok(Ok(Some(paths))) = receiver.await
-                                && let Some(path) = paths.into_iter().next()
-                            {
-                                entity
-                                    .update(cx, |this, cx| {
-                                        this.begin_scan(path.clone());
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                let scan_path = path.clone();
-                                let repos = cx
-                                    .background_executor()
-                                    .spawn(async move { git_ops::scan_repos(&scan_path) })
-                                    .await;
-                                entity
-                                    .update(cx, |this, cx| {
-                                        this.apply_scan(&path, repos);
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }
-                        })
-                        .detach();
-                    }));
+                let receiver = cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some("Select parent directory".into()),
+                });
+                cx.spawn(async move |entity: WeakEntity<GitMasterApp>, cx| {
+                    if let Ok(Ok(Some(paths))) = receiver.await
+                        && let Some(path) = paths.into_iter().next()
+                    {
+                        entity
+                            .update(cx, |this, cx| {
+                                this.begin_scan(path.clone());
+                                cx.notify();
+                            })
+                            .ok();
+                        let scan_path = path.clone();
+                        let repos = cx
+                            .background_executor()
+                            .spawn(async move { git_ops::scan_repos(&scan_path) })
+                            .await;
+                        entity
+                            .update(cx, |this, cx| {
+                                this.apply_scan(&path, repos);
+                                cx.notify();
+                            })
+                            .ok();
+                    }
+                })
+                .detach();
+            }));
 
         div()
             .flex()
@@ -72,12 +72,10 @@ impl GitMasterApp {
                     .flex_col()
                     .flex_grow()
                     .child(div().text_sm().child(dir_label))
-                    .children(status_msg.map(|msg| {
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::YELLOW))
-                            .child(msg)
-                    })),
+                    .children(
+                        status_msg
+                            .map(|msg| div().text_xs().text_color(rgb(theme::YELLOW)).child(msg)),
+                    ),
             )
             .child(self.track("change-dir-btn", btn))
             .into_any_element()

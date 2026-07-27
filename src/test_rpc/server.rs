@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::view_tree::ViewNode;
 
@@ -12,6 +12,11 @@ pub type ViewTreeProvider = Arc<Mutex<Option<ViewNode>>>;
 #[derive(Debug)]
 pub enum TestCommand {
     SelectRepo(usize),
+    ToggleRepo(usize),
+    SelectSubmodule {
+        repo_index: usize,
+        submodule_index: usize,
+    },
     SetTab(String),
 }
 
@@ -121,6 +126,54 @@ fn handle_request(
                 None => Some(json!({
                     "jsonrpc": "2.0",
                     "error": { "code": -32602, "message": "Missing params.index" },
+                    "id": id
+                })),
+            }
+        }
+        Some("toggle_repo") => {
+            let index = params
+                .and_then(|p| p.get("index"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            match index {
+                Some(i) => {
+                    if let Ok(mut q) = commands.lock() {
+                        q.push(TestCommand::ToggleRepo(i));
+                    }
+                    Some(json!({ "jsonrpc": "2.0", "result": "ok", "id": id }))
+                }
+                None => Some(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32602, "message": "Missing params.index" },
+                    "id": id
+                })),
+            }
+        }
+        Some("select_submodule") => {
+            let repo_index = params
+                .and_then(|p| p.get("repo_index"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            let submodule_index = params
+                .and_then(|p| p.get("submodule_index"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize);
+            match (repo_index, submodule_index) {
+                (Some(repo_index), Some(submodule_index)) => {
+                    if let Ok(mut q) = commands.lock() {
+                        q.push(TestCommand::SelectSubmodule {
+                            repo_index,
+                            submodule_index,
+                        });
+                    }
+                    Some(json!({ "jsonrpc": "2.0", "result": "ok", "id": id }))
+                }
+                _ => Some(json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32602,
+                        "message": "Missing params.repo_index or params.submodule_index"
+                    },
                     "id": id
                 })),
             }

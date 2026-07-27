@@ -1,7 +1,8 @@
 use gpui::*;
 
-use crate::app_state::{DetailTab, GitMasterApp};
-use crate::models::RepoDetail;
+use crate::app_state::{DetailTab, GitMasterApp, RepoSelection};
+use crate::git_ops;
+use crate::models::{RepoDetail, SubmoduleDetail};
 use crate::ui::theme;
 
 impl GitMasterApp {
@@ -10,7 +11,7 @@ impl GitMasterApp {
         _window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
-        self.selected_index?;
+        self.selected.as_ref()?;
 
         let body = if self.loading_detail {
             div()
@@ -19,6 +20,10 @@ impl GitMasterApp {
                 .text_color(rgb(theme::TEXT_SUBTLE))
                 .child("Loading…")
                 .into_any_element()
+        } else if let Some(submodule) = self.submodule_detail.as_ref()
+            && !submodule.is_initialized
+        {
+            self.render_uninitialized_submodule(submodule, cx)
         } else if let Some(detail) = self.detail.as_ref() {
             match self.active_tab {
                 DetailTab::Info => self.render_info_tab(detail).into_any_element(),
@@ -128,6 +133,39 @@ impl GitMasterApp {
             )
     }
 
+    fn render_uninitialized_submodule(
+        &self,
+        detail: &SubmoduleDetail,
+        cx: &mut Context<'_, Self>,
+    ) -> AnyElement {
+        let button = div()
+            .id("init-submodule-btn")
+            .px(px(12.0))
+            .py(px(6.0))
+            .bg(rgb(theme::ACCENT))
+            .text_color(rgb(theme::BG_BASE))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .text_sm()
+            .child("Initialize Submodule")
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.do_init_selected_submodule(cx);
+            }));
+
+        div()
+            .id("submodule-info-content")
+            .flex()
+            .flex_col()
+            .p(px(16.0))
+            .gap(px(12.0))
+            .child(info_row("Name", &detail.name))
+            .child(info_row("Path", &detail.path))
+            .child(info_row("URL", detail.url.as_deref().unwrap_or("(none)")))
+            .child(info_row("Status", "Not initialized"))
+            .child(self.track("init-submodule-btn", button))
+            .into_any_element()
+    }
+
     fn render_log_tab(&self) -> impl IntoElement {
         div()
             .id("log-scroll")
@@ -181,4 +219,99 @@ fn info_row(label: &str, value: &str) -> impl IntoElement {
                 .child(label.to_string()),
         )
         .child(div().text_sm().child(value.to_string()))
+}
+
+impl GitMasterApp {
+    fn do_init_selected_submodule(&mut self, cx: &mut Context<'_, Self>) {
+        if self.busy {
+            return;
+        }
+        let Some((repo_index, submodule_index, selected_relative_path)) = self.selected_submodule()
+        else {
+            return;
+        };
+        let Some((repo_path, relative_path)) = self.repos.get(repo_index).and_then(|repo| {
+            repo.submodules
+                .get(submodule_index)
+                .map(|submodule| (repo.path.clone(), submodule.relative_path.clone()))
+        }) else {
+            return;
+        };
+
+        self.busy = true;
+        self.set_status("Initializing submodule…");
+        cx.notify();
+
+        cx.spawn(async move |entity, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { git_ops::init_submodule(&repo_path, &relative_path) })
+                .await;
+
+            entity
+                .update(cx, |this, cx| {
+                    match result {
+                        Ok(msg) => {
+                            if msg.is_empty() {
+                                this.set_status("Submodule initialized");
+                            } else {
+                                this.set_status(format!("Submodule initialized: {msg}"));
+                            }
+                            this.refresh_repo(repo_index);
+                            let selected = this.selected_submodule();
+                            if let Some((repo_index, submodule_index, relative_path)) = selected
+                                && relative_path == selected_relative_path
+                                && let Some(submodule) = this
+                                    .repos
+                                    .get(repo_index)
+                                    .and_then(|repo| repo.submodules.get(submodule_index))
+                            {
+                                let path = submodule.path.clone();
+                                let submodule_detail = Some(SubmoduleDetail {
+                                    name: submodule.name.clone(),
+                                    path: submodule.path.display().to_string(),
+                                    url: submodule.url.clone(),
+                                    is_initialized: submodule.is_initialized,
+                                });
+                                let selection = RepoSelection::Submodule {
+                                    repo_index,
+                                    submodule_index,
+                                    relative_path,
+                                };
+                                this.loading_detail = true;
+                                cx.notify();
+                                cx.spawn(async move |entity, cx| {
+                                    let (detail, log_entries) = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            (
+                                                git_ops::get_repo_detail(&path),
+                                                git_ops::get_commit_log(&path, 200),
+                                            )
+                                        })
+                                        .await;
+                                    entity
+                                        .update(cx, |this, cx| {
+                                            this.apply_detail(
+                                                selection,
+                                                detail,
+                                                submodule_detail,
+                                                log_entries,
+                                            );
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                })
+                                .detach();
+                            }
+                        }
+                        Err(e) => this.set_status(format!("Submodule init failed: {e}")),
+                    }
+                    this.busy = false;
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+    }
 }

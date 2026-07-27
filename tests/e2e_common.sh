@@ -24,7 +24,14 @@ rpc() {
 
 wait_for_rpc() {
     for _ in $(seq 1 30); do
-        if rpc '{"jsonrpc":"2.0","method":"get_view_tree","id":0}' | grep -q '"result"' 2>/dev/null; then
+        if rpc '{"jsonrpc":"2.0","method":"get_view_tree","id":0}' | python3 -c "
+import json, sys
+try:
+    response = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if response.get('result') is not None else 1)
+" 2>/dev/null; then
             return 0
         fi
         sleep 0.5

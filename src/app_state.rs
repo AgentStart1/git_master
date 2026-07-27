@@ -1,14 +1,25 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use gpui::*;
 
-use crate::models::{LogEntry, RepoDetail, RepoInfo};
+use crate::models::{LogEntry, RepoDetail, RepoInfo, SubmoduleDetail};
 use crate::ui::theme;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum DetailTab {
     Info,
     GitLog,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RepoSelection {
+    Repo(usize),
+    Submodule {
+        repo_index: usize,
+        submodule_index: usize,
+        relative_path: PathBuf,
+    },
 }
 
 pub struct ContextMenu {
@@ -21,9 +32,11 @@ pub struct ContextMenu {
 pub struct GitMasterApp {
     pub parent_dir: Option<PathBuf>,
     pub repos: Vec<RepoInfo>,
-    pub selected_index: Option<usize>,
+    pub selected: Option<RepoSelection>,
+    pub expanded_repos: BTreeSet<usize>,
     pub active_tab: DetailTab,
     pub detail: Option<RepoDetail>,
+    pub submodule_detail: Option<SubmoduleDetail>,
     pub log_entries: Vec<LogEntry>,
     pub scanning: bool,
     pub loading_detail: bool,
@@ -43,9 +56,11 @@ impl GitMasterApp {
         Self {
             parent_dir: None,
             repos: Vec::new(),
-            selected_index: None,
+            selected: None,
+            expanded_repos: BTreeSet::new(),
             active_tab: DetailTab::Info,
             detail: None,
+            submodule_detail: None,
             log_entries: Vec::new(),
             scanning: false,
             loading_detail: false,
@@ -67,8 +82,10 @@ impl GitMasterApp {
     pub fn begin_scan(&mut self, path: PathBuf) {
         self.parent_dir = Some(path);
         self.repos.clear();
-        self.selected_index = None;
+        self.selected = None;
+        self.expanded_repos.clear();
         self.detail = None;
+        self.submodule_detail = None;
         self.log_entries.clear();
         self.scanning = true;
         self.loading_detail = false;
@@ -87,9 +104,28 @@ impl GitMasterApp {
     /// Mark a repo as selected and enter the loading state. The detail and
     /// commit-log work happens off-thread; results land via [`apply_detail`].
     pub fn begin_select(&mut self, index: usize) {
-        self.selected_index = Some(index);
+        self.selected = Some(RepoSelection::Repo(index));
         self.active_tab = DetailTab::Info;
         self.detail = None;
+        self.submodule_detail = None;
+        self.log_entries.clear();
+        self.loading_detail = true;
+    }
+
+    pub fn begin_select_submodule(
+        &mut self,
+        repo_index: usize,
+        submodule_index: usize,
+        relative_path: PathBuf,
+    ) {
+        self.selected = Some(RepoSelection::Submodule {
+            repo_index,
+            submodule_index,
+            relative_path,
+        });
+        self.active_tab = DetailTab::Info;
+        self.detail = None;
+        self.submodule_detail = None;
         self.log_entries.clear();
         self.loading_detail = true;
     }
@@ -98,20 +134,28 @@ impl GitMasterApp {
     /// the one currently selected.
     pub fn apply_detail(
         &mut self,
-        index: usize,
+        selection: RepoSelection,
         detail: Option<RepoDetail>,
+        submodule_detail: Option<SubmoduleDetail>,
         log_entries: Vec<LogEntry>,
     ) {
-        if self.selected_index != Some(index) {
+        if self.selected.as_ref() != Some(&selection) {
             return;
         }
         self.detail = detail;
+        self.submodule_detail = submodule_detail;
         self.log_entries = log_entries;
         self.loading_detail = false;
     }
 
     pub fn set_tab(&mut self, tab: DetailTab) {
         self.active_tab = tab;
+    }
+
+    pub fn toggle_repo_expanded(&mut self, index: usize) {
+        if !self.expanded_repos.insert(index) {
+            self.expanded_repos.remove(&index);
+        }
     }
 
     pub fn open_context_menu(
@@ -150,7 +194,149 @@ impl GitMasterApp {
         if let Some(repo) = self.repos.get(index) {
             if let Some(info) = crate::git_ops::build_repo_info(&repo.path) {
                 self.repos[index] = info;
+                self.reconcile_submodule_selection(index);
             }
+        }
+    }
+
+    fn reconcile_submodule_selection(&mut self, refreshed_repo_index: usize) {
+        let Some(RepoSelection::Submodule {
+            repo_index,
+            relative_path,
+            ..
+        }) = self.selected.as_ref()
+        else {
+            return;
+        };
+        if *repo_index != refreshed_repo_index {
+            return;
+        }
+        let Some(new_index) = self.repos.get(*repo_index).and_then(|repo| {
+            repo.submodules
+                .iter()
+                .position(|submodule| submodule.relative_path == *relative_path)
+        }) else {
+            self.selected = None;
+            self.detail = None;
+            self.submodule_detail = None;
+            self.log_entries.clear();
+            self.loading_detail = false;
+            return;
+        };
+        self.selected = Some(RepoSelection::Submodule {
+            repo_index: *repo_index,
+            submodule_index: new_index,
+            relative_path: relative_path.clone(),
+        });
+    }
+
+    pub fn selected_submodule(&self) -> Option<(usize, usize, PathBuf)> {
+        match self.selected.as_ref() {
+            Some(RepoSelection::Submodule {
+                repo_index,
+                submodule_index,
+                relative_path,
+            }) => self
+                .repos
+                .get(*repo_index)
+                .and_then(|repo| repo.submodules.get(*submodule_index))
+                .filter(|submodule| submodule.relative_path == *relative_path)
+                .map(|_| (*repo_index, *submodule_index, relative_path.clone())),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "test-rpc")]
+    pub fn process_test_commands(&mut self) -> bool {
+        let cmds: Vec<_> = self
+            .command_queue
+            .lock()
+            .ok()
+            .map(|mut q| q.drain(..).collect())
+            .unwrap_or_default();
+        let mut changed = false;
+        for cmd in cmds {
+            match cmd {
+                crate::test_rpc::server::TestCommand::SelectRepo(i) => {
+                    if let Some(repo) = self.repos.get(i) {
+                        let path = repo.path.clone();
+                        self.begin_select(i);
+                        let detail = crate::git_ops::get_repo_detail(&path);
+                        let log = crate::git_ops::get_commit_log(&path, 200);
+                        self.apply_detail(RepoSelection::Repo(i), detail, None, log);
+                        changed = true;
+                    }
+                }
+                crate::test_rpc::server::TestCommand::ToggleRepo(i) => {
+                    self.toggle_repo_expanded(i);
+                    changed = true;
+                }
+                crate::test_rpc::server::TestCommand::SelectSubmodule {
+                    repo_index,
+                    submodule_index,
+                } => {
+                    if let Some((path, relative_path, submodule_detail, is_initialized)) = self
+                        .repos
+                        .get(repo_index)
+                        .and_then(|repo| repo.submodules.get(submodule_index))
+                        .map(|submodule| {
+                            (
+                                submodule.path.clone(),
+                                submodule.relative_path.clone(),
+                                Some(SubmoduleDetail {
+                                    name: submodule.name.clone(),
+                                    path: submodule.path.display().to_string(),
+                                    url: submodule.url.clone(),
+                                    is_initialized: submodule.is_initialized,
+                                }),
+                                submodule.is_initialized,
+                            )
+                        })
+                    {
+                        self.begin_select_submodule(
+                            repo_index,
+                            submodule_index,
+                            relative_path.clone(),
+                        );
+                        let detail = is_initialized
+                            .then(|| crate::git_ops::get_repo_detail(&path))
+                            .flatten();
+                        let log = if is_initialized {
+                            crate::git_ops::get_commit_log(&path, 200)
+                        } else {
+                            Vec::new()
+                        };
+                        self.apply_detail(
+                            RepoSelection::Submodule {
+                                repo_index,
+                                submodule_index,
+                                relative_path,
+                            },
+                            detail,
+                            submodule_detail,
+                            log,
+                        );
+                        changed = true;
+                    }
+                }
+                crate::test_rpc::server::TestCommand::SetTab(ref tab) => {
+                    match tab.as_str() {
+                        "info" => self.set_tab(DetailTab::Info),
+                        "log" => self.set_tab(DetailTab::GitLog),
+                        _ => {}
+                    }
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    #[cfg(feature = "test-rpc")]
+    pub fn publish_test_view_tree(&self) {
+        let tree = self.build_view_tree();
+        if let Ok(mut guard) = self.tree_provider.lock() {
+            *guard = Some(tree);
         }
     }
 }
@@ -160,42 +346,11 @@ impl Render for GitMasterApp {
         #[cfg(feature = "test-rpc")]
         {
             cx.on_next_frame(window, |this, _window, cx| {
-                let cmds: Vec<_> = this
-                    .command_queue
-                    .lock()
-                    .ok()
-                    .map(|mut q| q.drain(..).collect())
-                    .unwrap_or_default();
-                let mut changed = false;
-                for cmd in cmds {
-                    match cmd {
-                        crate::test_rpc::server::TestCommand::SelectRepo(i) => {
-                            if let Some(repo) = this.repos.get(i) {
-                                let path = repo.path.clone();
-                                this.begin_select(i);
-                                let detail = crate::git_ops::get_repo_detail(&path);
-                                let log = crate::git_ops::get_commit_log(&path, 200);
-                                this.apply_detail(i, detail, log);
-                                changed = true;
-                            }
-                        }
-                        crate::test_rpc::server::TestCommand::SetTab(ref tab) => {
-                            match tab.as_str() {
-                                "info" => this.set_tab(DetailTab::Info),
-                                "log" => this.set_tab(DetailTab::GitLog),
-                                _ => {}
-                            }
-                            changed = true;
-                        }
-                    }
-                }
+                let changed = this.process_test_commands();
                 if changed {
                     cx.notify();
                 }
-                let tree = this.build_view_tree();
-                if let Ok(mut guard) = this.tree_provider.lock() {
-                    *guard = Some(tree);
-                }
+                this.publish_test_view_tree();
             });
         }
 

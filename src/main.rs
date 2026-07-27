@@ -38,7 +38,7 @@ fn main() {
                 |_window, cx| {
                     cx.new(|_cx| {
                         #[allow(unused_mut)]
-                    let mut app = GitMasterApp::new();
+                        let mut app = GitMasterApp::new();
                         #[cfg(feature = "test-rpc")]
                         {
                             app.tree_provider = tree_provider.clone();
@@ -59,6 +59,7 @@ fn main() {
                     entity.update(cx, |this, cx| {
                         this.begin_scan(path.clone());
                         this.apply_scan(&path, repos);
+                        this.publish_test_view_tree();
                         cx.notify();
                     });
                 }
@@ -70,13 +71,15 @@ fn main() {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(100))
                             .await;
-                        let has_cmds = cmds_watch
-                            .lock()
-                            .ok()
-                            .is_some_and(|q| !q.is_empty());
+                        let has_cmds = cmds_watch.lock().ok().is_some_and(|q| !q.is_empty());
                         if has_cmds {
                             entity_watch
-                                .update(&mut cx.clone(), |_, cx| cx.notify())
+                                .update(&mut cx.clone(), |this, cx| {
+                                    if this.process_test_commands() {
+                                        this.publish_test_view_tree();
+                                        cx.notify();
+                                    }
+                                })
                                 .ok();
                         }
                     }

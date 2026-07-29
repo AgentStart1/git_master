@@ -1,9 +1,10 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use gpui::*;
 
-pub type BoundsRegistry = Arc<Mutex<HashMap<String, Bounds<Pixels>>>>;
+pub type BoundsRegistry = Rc<RefCell<HashMap<String, Bounds<Pixels>>>>;
 
 pub struct Tracked {
     track_id: String,
@@ -58,9 +59,9 @@ impl Element for Tracked {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        if let Ok(mut reg) = self.registry.lock() {
-            reg.insert(self.track_id.clone(), bounds);
-        }
+        self.registry
+            .borrow_mut()
+            .insert(self.track_id.clone(), bounds);
         self.inner.prepaint(window, cx);
     }
 

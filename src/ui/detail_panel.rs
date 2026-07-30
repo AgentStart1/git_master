@@ -242,10 +242,15 @@ impl GitMasterApp {
         self.set_status("Initializing submodule…");
         cx.notify();
 
-        cx.spawn(async move |entity, cx| {
-            let result = cx
+        self.operation_task = Some(cx.spawn(async move |entity, cx| {
+            let refresh_path = repo_path.clone();
+            let (result, refreshed) = cx
                 .background_executor()
-                .spawn(async move { git_ops::init_submodule(&repo_path, &relative_path) })
+                .spawn(async move {
+                    let result = git_ops::init_submodule(&repo_path, &relative_path);
+                    let refreshed = git_ops::build_repo_info(&repo_path);
+                    (result, refreshed)
+                })
                 .await;
 
             entity
@@ -257,7 +262,7 @@ impl GitMasterApp {
                             } else {
                                 this.set_status(format!("Submodule initialized: {msg}"));
                             }
-                            this.refresh_repo(repo_index);
+                            this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
                             let selected = this.selected_submodule();
                             if let Some((repo_index, submodule_index, relative_path)) = selected
                                 && relative_path == selected_relative_path
@@ -280,7 +285,7 @@ impl GitMasterApp {
                                 };
                                 this.loading_detail = true;
                                 cx.notify();
-                                cx.spawn(async move |entity, cx| {
+                                this.detail_task = Some(cx.spawn(async move |entity, cx| {
                                     let (detail, log_entries) = cx
                                         .background_executor()
                                         .spawn(async move {
@@ -301,8 +306,7 @@ impl GitMasterApp {
                                             cx.notify();
                                         })
                                         .ok();
-                                })
-                                .detach();
+                                }));
                             }
                         }
                         Err(e) => this.set_status(format!("Submodule init failed: {e}")),
@@ -311,7 +315,6 @@ impl GitMasterApp {
                     cx.notify();
                 })
                 .ok();
-        })
-        .detach();
+        }));
     }
 }

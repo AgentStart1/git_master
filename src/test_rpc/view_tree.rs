@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use gpui::{Bounds, Pixels};
 use serde::Serialize;
 
-use crate::app_state::{DetailTab, GitMasterApp};
+use crate::app_state::{ContextMenu, DetailTab, GitMasterApp, RepoSelection};
+use crate::models::{LogEntry, RepoDetail, RepoInfo, SubmoduleDetail};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Rect {
@@ -83,11 +84,45 @@ impl ViewNode {
     }
 }
 
+pub struct TestViewTreeSnapshot {
+    bounds: HashMap<String, Bounds<Pixels>>,
+    parent_dir: Option<std::path::PathBuf>,
+    repos: Vec<RepoInfo>,
+    selected: Option<RepoSelection>,
+    expanded_repos: std::collections::BTreeSet<usize>,
+    active_tab: DetailTab,
+    detail: Option<RepoDetail>,
+    submodule_detail: Option<SubmoduleDetail>,
+    log_entries: Vec<LogEntry>,
+    scanning: bool,
+    loading_detail: bool,
+    context_menu: Option<ContextMenu>,
+    status_message: Option<String>,
+}
+
 impl GitMasterApp {
-    pub fn build_view_tree(&self) -> ViewNode {
-        let reg = self.bounds_registry.lock().ok();
-        let empty = HashMap::new();
-        let reg = reg.as_deref().unwrap_or(&empty);
+    pub fn test_view_tree_snapshot(&self) -> TestViewTreeSnapshot {
+        TestViewTreeSnapshot {
+            bounds: self.bounds_registry.borrow().clone(),
+            parent_dir: self.parent_dir.clone(),
+            repos: self.repos.clone(),
+            selected: self.selected.clone(),
+            expanded_repos: self.expanded_repos.clone(),
+            active_tab: self.active_tab,
+            detail: self.detail.clone(),
+            submodule_detail: self.submodule_detail.clone(),
+            log_entries: self.log_entries.clone(),
+            scanning: self.scanning,
+            loading_detail: self.loading_detail,
+            context_menu: self.context_menu.clone(),
+            status_message: self.status_message.clone(),
+        }
+    }
+}
+
+impl TestViewTreeSnapshot {
+    pub fn build(&self) -> ViewNode {
+        let reg = &self.bounds;
 
         let top_bar = self.build_top_bar_node(reg);
         let repo_list = self.build_repo_list_node(reg);
@@ -386,5 +421,21 @@ impl GitMasterApp {
             );
 
         Some(node)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_builds_a_view_tree_without_accessing_live_ui_state() {
+        let app = GitMasterApp::new();
+
+        let tree = app.test_view_tree_snapshot().build();
+
+        assert_eq!(tree.node_type, "window");
+        assert_eq!(tree.id.as_deref(), Some("root"));
+        assert!(!tree.children.is_empty());
     }
 }

@@ -344,6 +344,18 @@ impl GitMasterApp {
             result.log_entries,
         );
     }
+
+    #[cfg(feature = "test-rpc")]
+    pub fn schedule_test_view_tree_publish(&mut self, cx: &mut Context<'_, Self>) {
+        let snapshot = self.test_view_tree_snapshot();
+        let provider = self.tree_provider.clone();
+        self.test_view_tree_task = Some(cx.background_executor().spawn(async move {
+            let tree = snapshot.build();
+            if let Ok(mut guard) = provider.lock() {
+                *guard = Some(tree);
+            }
+        }));
+    }
 }
 
 #[cfg(feature = "test-rpc")]
@@ -387,14 +399,7 @@ impl Render for GitMasterApp {
         #[cfg(feature = "test-rpc")]
         {
             cx.on_next_frame(window, |this, _window, cx| {
-                let snapshot = this.test_view_tree_snapshot();
-                let provider = this.tree_provider.clone();
-                this.test_view_tree_task = Some(cx.background_executor().spawn(async move {
-                    let tree = snapshot.build();
-                    if let Ok(mut guard) = provider.lock() {
-                        *guard = Some(tree);
-                    }
-                }));
+                this.schedule_test_view_tree_publish(cx);
             });
         }
 

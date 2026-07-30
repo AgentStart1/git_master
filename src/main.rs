@@ -69,6 +69,7 @@ fn main() {
                         scan_entity
                             .update(cx, |this, cx| {
                                 this.apply_scan(&path, repos);
+                                this.schedule_test_view_tree_publish(cx);
                                 cx.notify();
                             })
                             .ok();
@@ -100,6 +101,9 @@ fn main() {
                         for command in commands {
                             let Ok(request) = entity_watch.update(cx, |this, cx| {
                                 let request = this.prepare_test_command(command);
+                                if request.is_none() {
+                                    this.schedule_test_view_tree_publish(cx);
+                                }
                                 cx.notify();
                                 request
                             }) else {
@@ -114,6 +118,7 @@ fn main() {
                                 if entity_watch
                                     .update(cx, |this, cx| {
                                         this.apply_test_detail(result);
+                                        this.schedule_test_view_tree_publish(cx);
                                         cx.notify();
                                     })
                                     .is_err()

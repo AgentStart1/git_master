@@ -55,32 +55,77 @@ fn main() {
             if let Ok(entity) = window.entity(cx) {
                 if let Ok(dir) = std::env::var("GIT_MASTER_OPEN_DIR") {
                     let path = std::path::PathBuf::from(&dir);
-                    let repos = git_ops::scan_repos(&path);
                     entity.update(cx, |this, cx| {
                         this.begin_scan(path.clone());
-                        this.apply_scan(&path, repos);
-                        this.publish_test_view_tree();
                         cx.notify();
+                    });
+                    let scan_path = path.clone();
+                    let scan_entity = entity.downgrade();
+                    let scan_task = cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+                        let repos = cx
+                            .background_executor()
+                            .spawn(async move { git_ops::scan_repos(&scan_path) })
+                            .await;
+                        scan_entity
+                            .update(cx, |this, cx| {
+                                this.apply_scan(&path, repos);
+                                this.schedule_test_view_tree_publish(cx);
+                                cx.notify();
+                            })
+                            .ok();
+                    });
+                    entity.update(cx, |this, _cx| {
+                        this.scan_task = Some(scan_task);
                     });
                 }
 
                 let cmds_watch = command_queue.clone();
-                let entity_watch = entity.clone();
+                let entity_watch = entity.downgrade();
                 cx.spawn(async move |cx: &mut gpui::AsyncApp| {
                     loop {
                         cx.background_executor()
                             .timer(std::time::Duration::from_millis(100))
                             .await;
-                        let has_cmds = cmds_watch.lock().ok().is_some_and(|q| !q.is_empty());
-                        if has_cmds {
-                            entity_watch
-                                .update(&mut cx.clone(), |this, cx| {
-                                    if this.process_test_commands() {
-                                        this.publish_test_view_tree();
+                        let queue = cmds_watch.clone();
+                        let commands = cx
+                            .background_executor()
+                            .spawn(async move {
+                                queue
+                                    .lock()
+                                    .ok()
+                                    .map(|mut commands| commands.drain(..).collect::<Vec<_>>())
+                                    .unwrap_or_default()
+                            })
+                            .await;
+
+                        for command in commands {
+                            let Ok(request) = entity_watch.update(cx, |this, cx| {
+                                let request = this.prepare_test_command(command);
+                                if request.is_none() {
+                                    this.schedule_test_view_tree_publish(cx);
+                                }
+                                cx.notify();
+                                request
+                            }) else {
+                                return;
+                            };
+
+                            if let Some(request) = request {
+                                let result = cx
+                                    .background_executor()
+                                    .spawn(async move { request.load() })
+                                    .await;
+                                if entity_watch
+                                    .update(cx, |this, cx| {
+                                        this.apply_test_detail(result);
+                                        this.schedule_test_view_tree_publish(cx);
                                         cx.notify();
-                                    }
-                                })
-                                .ok();
+                                    })
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
                         }
                     }
                 })

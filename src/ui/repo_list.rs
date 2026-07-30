@@ -51,7 +51,7 @@ impl GitMasterApp {
                         let path = repo.path.clone();
                         this.begin_select(i);
                         cx.notify();
-                        cx.spawn(async move |entity, cx| {
+                        this.detail_task = Some(cx.spawn(async move |entity, cx| {
                             let (detail, log_entries) = cx
                                 .background_executor()
                                 .spawn(async move {
@@ -72,8 +72,7 @@ impl GitMasterApp {
                                     cx.notify();
                                 })
                                 .ok();
-                        })
-                        .detach();
+                        }));
                     }))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -86,7 +85,7 @@ impl GitMasterApp {
                             };
                             let path = repo.path.clone();
                             let position = event.position;
-                            cx.spawn(async move |entity, cx| {
+                            this.context_menu_task = Some(cx.spawn(async move |entity, cx| {
                                 let branches = cx
                                     .background_executor()
                                     .spawn(async move { git_ops::list_local_branches(&path) })
@@ -97,8 +96,7 @@ impl GitMasterApp {
                                         cx.notify();
                                     })
                                     .ok();
-                            })
-                            .detach();
+                            }));
                         }),
                     )
                     .child(
@@ -212,7 +210,7 @@ impl GitMasterApp {
                                 let path = path.clone();
                                 let relative_path = relative_path.clone();
                                 let submodule_detail = submodule_detail.clone();
-                                cx.spawn(async move |entity, cx| {
+                                this.detail_task = Some(cx.spawn(async move |entity, cx| {
                                     let (detail, log_entries) = cx
                                         .background_executor()
                                         .spawn(async move {
@@ -241,8 +239,7 @@ impl GitMasterApp {
                                             cx.notify();
                                         })
                                         .ok();
-                                })
-                                .detach();
+                                }));
                             }))
                             .child(
                                 div()
@@ -424,10 +421,15 @@ impl GitMasterApp {
         self.set_status(format!("Checking out {branch}…"));
         cx.notify();
         let branch_clone = branch.clone();
-        cx.spawn(async move |entity, cx| {
-            let result = cx
+        self.operation_task = Some(cx.spawn(async move |entity, cx| {
+            let refresh_path = path.clone();
+            let (result, refreshed) = cx
                 .background_executor()
-                .spawn(async move { git_ops::checkout_branch(&path, &branch_clone) })
+                .spawn(async move {
+                    let result = git_ops::checkout_branch(&path, &branch_clone);
+                    let refreshed = git_ops::build_repo_info(&path);
+                    (result, refreshed)
+                })
                 .await;
             entity
                 .update(cx, |this, cx| {
@@ -435,13 +437,12 @@ impl GitMasterApp {
                         Ok(_) => this.set_status(format!("Switched to {branch}")),
                         Err(e) => this.set_status(format!("Checkout failed: {e}")),
                     }
-                    this.refresh_repo(repo_index);
+                    this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
                     this.busy = false;
                     cx.notify();
                 })
                 .ok();
-        })
-        .detach();
+        }));
     }
 
     fn do_pull_rebase(&mut self, repo_index: usize, cx: &mut Context<'_, Self>) {
@@ -452,10 +453,15 @@ impl GitMasterApp {
         self.busy = true;
         self.set_status("Pulling --rebase…".to_string());
         cx.notify();
-        cx.spawn(async move |entity, cx| {
-            let result = cx
+        self.operation_task = Some(cx.spawn(async move |entity, cx| {
+            let refresh_path = path.clone();
+            let (result, refreshed) = cx
                 .background_executor()
-                .spawn(async move { git_ops::pull_rebase(&path) })
+                .spawn(async move {
+                    let result = git_ops::pull_rebase(&path);
+                    let refreshed = git_ops::build_repo_info(&path);
+                    (result, refreshed)
+                })
                 .await;
             entity
                 .update(cx, |this, cx| {
@@ -469,13 +475,12 @@ impl GitMasterApp {
                         }
                         Err(e) => this.set_status(format!("Pull failed: {e}")),
                     }
-                    this.refresh_repo(repo_index);
+                    this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
                     this.busy = false;
                     cx.notify();
                 })
                 .ok();
-        })
-        .detach();
+        }));
     }
 
     fn do_push(&mut self, repo_index: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
@@ -484,37 +489,59 @@ impl GitMasterApp {
         };
         let path = repo.path.clone();
         let branch = repo.current_branch.clone();
+        let entity = cx.entity().downgrade();
+        self.busy = true;
+        self.set_status("Checking upstream…");
+        cx.notify();
 
-        let has_up = git_ops::has_upstream(&path, &branch);
-        if has_up {
-            self.do_push_inner(repo_index, path, false, cx);
-        } else {
-            let branch_display = branch.clone();
-            let receiver = window.prompt(
-                PromptLevel::Info,
-                &format!("No upstream branch for '{branch_display}'"),
-                Some(&format!(
-                    "Create remote branch 'origin/{branch_display}' and push?"
-                )),
-                &[
-                    PromptButton::ok("Push & Create"),
-                    PromptButton::cancel("Cancel"),
-                ],
-                cx,
-            );
-            cx.spawn(async move |entity, cx| {
-                if let Ok(answer) = receiver.await {
-                    if answer == 0 {
-                        entity
-                            .update(cx, |this, cx| {
-                                this.do_push_inner(repo_index, path, true, cx);
-                            })
-                            .ok();
-                    }
-                }
-            })
-            .detach();
-        }
+        self.push_preflight_task = Some(window.spawn(cx, async move |cx| {
+            let check_path = path.clone();
+            let check_branch = branch.clone();
+            let has_upstream = cx
+                .background_executor()
+                .spawn(async move { git_ops::has_upstream(&check_path, &check_branch) })
+                .await;
+
+            if has_upstream {
+                entity
+                    .update(cx, |this, cx| {
+                        this.do_push_inner(repo_index, path, false, cx);
+                    })
+                    .ok();
+                return;
+            }
+
+            if entity
+                .update(cx, |this, cx| {
+                    this.busy = false;
+                    this.set_status(format!("No upstream branch for '{branch}'"));
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+
+            let answer = cx
+                .prompt(
+                    PromptLevel::Info,
+                    &format!("No upstream branch for '{branch}'"),
+                    Some(&format!("Create remote branch 'origin/{branch}' and push?")),
+                    &[
+                        PromptButton::ok("Push & Create"),
+                        PromptButton::cancel("Cancel"),
+                    ],
+                )
+                .await;
+
+            if answer == Ok(0) {
+                entity
+                    .update(cx, |this, cx| {
+                        this.do_push_inner(repo_index, path, true, cx);
+                    })
+                    .ok();
+            }
+        }));
     }
 
     fn do_push_inner(
@@ -532,15 +559,18 @@ impl GitMasterApp {
         self.busy = true;
         self.set_status("Pushing…".to_string());
         cx.notify();
-        cx.spawn(async move |entity, cx| {
-            let result = cx
+        self.operation_task = Some(cx.spawn(async move |entity, cx| {
+            let refresh_path = path.clone();
+            let (result, refreshed) = cx
                 .background_executor()
                 .spawn(async move {
-                    if set_upstream {
+                    let result = if set_upstream {
                         git_ops::push_set_upstream(&path, &branch)
                     } else {
                         git_ops::push(&path)
-                    }
+                    };
+                    let refreshed = git_ops::build_repo_info(&path);
+                    (result, refreshed)
                 })
                 .await;
             entity
@@ -555,12 +585,11 @@ impl GitMasterApp {
                         }
                         Err(e) => this.set_status(format!("Push failed: {e}")),
                     }
-                    this.refresh_repo(repo_index);
+                    this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
                     this.busy = false;
                     cx.notify();
                 })
                 .ok();
-        })
-        .detach();
+        }));
     }
 }

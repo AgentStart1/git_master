@@ -22,6 +22,7 @@ pub enum RepoSelection {
     },
 }
 
+#[derive(Clone)]
 pub struct ContextMenu {
     pub repo_index: usize,
     pub position: Point<Pixels>,
@@ -43,6 +44,13 @@ pub struct GitMasterApp {
     pub context_menu: Option<ContextMenu>,
     pub status_message: Option<String>,
     pub busy: bool,
+    pub scan_task: Option<Task<()>>,
+    pub detail_task: Option<Task<()>>,
+    pub context_menu_task: Option<Task<()>>,
+    pub push_preflight_task: Option<Task<()>>,
+    pub operation_task: Option<Task<()>>,
+    #[cfg(feature = "test-rpc")]
+    pub test_view_tree_task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
     pub bounds_registry: crate::test_rpc::tracked::BoundsRegistry,
     #[cfg(feature = "test-rpc")]
@@ -67,6 +75,13 @@ impl GitMasterApp {
             context_menu: None,
             status_message: None,
             busy: false,
+            scan_task: None,
+            detail_task: None,
+            context_menu_task: None,
+            push_preflight_task: None,
+            operation_task: None,
+            #[cfg(feature = "test-rpc")]
+            test_view_tree_task: None,
             #[cfg(feature = "test-rpc")]
             bounds_registry: Default::default(),
             #[cfg(feature = "test-rpc")]
@@ -80,6 +95,12 @@ impl GitMasterApp {
     /// The actual `scan_repos` work happens off-thread; results land via
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
+        let was_checking_upstream = self.status_message.as_deref() == Some("Checking upstream…");
+        self.push_preflight_task = None;
+        if was_checking_upstream {
+            self.busy = false;
+            self.status_message = None;
+        }
         self.parent_dir = Some(path);
         self.repos.clear();
         self.selected = None;
@@ -89,6 +110,9 @@ impl GitMasterApp {
         self.log_entries.clear();
         self.scanning = true;
         self.loading_detail = false;
+        self.detail_task = None;
+        self.context_menu_task = None;
+        self.context_menu = None;
     }
 
     /// Apply scan results, ignoring stale completions from a directory the
@@ -104,6 +128,7 @@ impl GitMasterApp {
     /// Mark a repo as selected and enter the loading state. The detail and
     /// commit-log work happens off-thread; results land via [`apply_detail`].
     pub fn begin_select(&mut self, index: usize) {
+        self.detail_task = None;
         self.selected = Some(RepoSelection::Repo(index));
         self.active_tab = DetailTab::Info;
         self.detail = None;
@@ -118,6 +143,7 @@ impl GitMasterApp {
         submodule_index: usize,
         relative_path: PathBuf,
     ) {
+        self.detail_task = None;
         self.selected = Some(RepoSelection::Submodule {
             repo_index,
             submodule_index,
@@ -190,12 +216,18 @@ impl GitMasterApp {
         element.into_any_element()
     }
 
-    pub fn refresh_repo(&mut self, index: usize) {
-        if let Some(repo) = self.repos.get(index) {
-            if let Some(info) = crate::git_ops::build_repo_info(&repo.path) {
-                self.repos[index] = info;
-                self.reconcile_submodule_selection(index);
-            }
+    pub fn apply_repo_refresh(
+        &mut self,
+        index: usize,
+        expected_path: &Path,
+        refreshed: Option<RepoInfo>,
+    ) {
+        if self.repos.get(index).map(|repo| repo.path.as_path()) != Some(expected_path) {
+            return;
+        }
+        if let Some(info) = refreshed {
+            self.repos[index] = info;
+            self.reconcile_submodule_selection(index);
         }
     }
 
@@ -247,96 +279,123 @@ impl GitMasterApp {
     }
 
     #[cfg(feature = "test-rpc")]
-    pub fn process_test_commands(&mut self) -> bool {
-        let cmds: Vec<_> = self
-            .command_queue
-            .lock()
-            .ok()
-            .map(|mut q| q.drain(..).collect())
-            .unwrap_or_default();
-        let mut changed = false;
-        for cmd in cmds {
-            match cmd {
-                crate::test_rpc::server::TestCommand::SelectRepo(i) => {
-                    if let Some(repo) = self.repos.get(i) {
-                        let path = repo.path.clone();
-                        self.begin_select(i);
-                        let detail = crate::git_ops::get_repo_detail(&path);
-                        let log = crate::git_ops::get_commit_log(&path, 200);
-                        self.apply_detail(RepoSelection::Repo(i), detail, None, log);
-                        changed = true;
-                    }
-                }
-                crate::test_rpc::server::TestCommand::ToggleRepo(i) => {
-                    self.toggle_repo_expanded(i);
-                    changed = true;
-                }
-                crate::test_rpc::server::TestCommand::SelectSubmodule {
+    pub fn prepare_test_command(
+        &mut self,
+        command: crate::test_rpc::server::TestCommand,
+    ) -> Option<TestDetailRequest> {
+        match command {
+            crate::test_rpc::server::TestCommand::SelectRepo(index) => {
+                let path = self.repos.get(index)?.path.clone();
+                let selection = RepoSelection::Repo(index);
+                self.begin_select(index);
+                Some(TestDetailRequest {
+                    selection,
+                    path,
+                    submodule_detail: None,
+                    is_initialized: true,
+                })
+            }
+            crate::test_rpc::server::TestCommand::ToggleRepo(index) => {
+                self.toggle_repo_expanded(index);
+                None
+            }
+            crate::test_rpc::server::TestCommand::SelectSubmodule {
+                repo_index,
+                submodule_index,
+            } => {
+                let submodule = self
+                    .repos
+                    .get(repo_index)?
+                    .submodules
+                    .get(submodule_index)?;
+                let path = submodule.path.clone();
+                let relative_path = submodule.relative_path.clone();
+                let submodule_detail = Some(SubmoduleDetail {
+                    name: submodule.name.clone(),
+                    path: submodule.path.display().to_string(),
+                    url: submodule.url.clone(),
+                    is_initialized: submodule.is_initialized,
+                });
+                let is_initialized = submodule.is_initialized;
+                let selection = RepoSelection::Submodule {
                     repo_index,
                     submodule_index,
-                } => {
-                    if let Some((path, relative_path, submodule_detail, is_initialized)) = self
-                        .repos
-                        .get(repo_index)
-                        .and_then(|repo| repo.submodules.get(submodule_index))
-                        .map(|submodule| {
-                            (
-                                submodule.path.clone(),
-                                submodule.relative_path.clone(),
-                                Some(SubmoduleDetail {
-                                    name: submodule.name.clone(),
-                                    path: submodule.path.display().to_string(),
-                                    url: submodule.url.clone(),
-                                    is_initialized: submodule.is_initialized,
-                                }),
-                                submodule.is_initialized,
-                            )
-                        })
-                    {
-                        self.begin_select_submodule(
-                            repo_index,
-                            submodule_index,
-                            relative_path.clone(),
-                        );
-                        let detail = is_initialized
-                            .then(|| crate::git_ops::get_repo_detail(&path))
-                            .flatten();
-                        let log = if is_initialized {
-                            crate::git_ops::get_commit_log(&path, 200)
-                        } else {
-                            Vec::new()
-                        };
-                        self.apply_detail(
-                            RepoSelection::Submodule {
-                                repo_index,
-                                submodule_index,
-                                relative_path,
-                            },
-                            detail,
-                            submodule_detail,
-                            log,
-                        );
-                        changed = true;
-                    }
+                    relative_path: relative_path.clone(),
+                };
+                self.begin_select_submodule(repo_index, submodule_index, relative_path);
+                Some(TestDetailRequest {
+                    selection,
+                    path,
+                    submodule_detail,
+                    is_initialized,
+                })
+            }
+            crate::test_rpc::server::TestCommand::SetTab(tab) => {
+                match tab.as_str() {
+                    "info" => self.set_tab(DetailTab::Info),
+                    "log" => self.set_tab(DetailTab::GitLog),
+                    _ => {}
                 }
-                crate::test_rpc::server::TestCommand::SetTab(ref tab) => {
-                    match tab.as_str() {
-                        "info" => self.set_tab(DetailTab::Info),
-                        "log" => self.set_tab(DetailTab::GitLog),
-                        _ => {}
-                    }
-                    changed = true;
-                }
+                None
             }
         }
-        changed
     }
 
     #[cfg(feature = "test-rpc")]
-    pub fn publish_test_view_tree(&self) {
-        let tree = self.build_view_tree();
-        if let Ok(mut guard) = self.tree_provider.lock() {
-            *guard = Some(tree);
+    pub fn apply_test_detail(&mut self, result: TestDetailResult) {
+        self.apply_detail(
+            result.selection,
+            result.detail,
+            result.submodule_detail,
+            result.log_entries,
+        );
+    }
+
+    #[cfg(feature = "test-rpc")]
+    pub fn schedule_test_view_tree_publish(&mut self, cx: &mut Context<'_, Self>) {
+        let snapshot = self.test_view_tree_snapshot();
+        let provider = self.tree_provider.clone();
+        self.test_view_tree_task = Some(cx.background_executor().spawn(async move {
+            let tree = snapshot.build();
+            if let Ok(mut guard) = provider.lock() {
+                *guard = Some(tree);
+            }
+        }));
+    }
+}
+
+#[cfg(feature = "test-rpc")]
+pub struct TestDetailRequest {
+    selection: RepoSelection,
+    path: PathBuf,
+    submodule_detail: Option<SubmoduleDetail>,
+    is_initialized: bool,
+}
+
+#[cfg(feature = "test-rpc")]
+pub struct TestDetailResult {
+    selection: RepoSelection,
+    detail: Option<RepoDetail>,
+    submodule_detail: Option<SubmoduleDetail>,
+    log_entries: Vec<LogEntry>,
+}
+
+#[cfg(feature = "test-rpc")]
+impl TestDetailRequest {
+    pub fn load(self) -> TestDetailResult {
+        let (detail, log_entries) = if self.is_initialized {
+            (
+                crate::git_ops::get_repo_detail(&self.path),
+                crate::git_ops::get_commit_log(&self.path, 200),
+            )
+        } else {
+            (None, Vec::new())
+        };
+        TestDetailResult {
+            selection: self.selection,
+            detail,
+            submodule_detail: self.submodule_detail,
+            log_entries,
         }
     }
 }
@@ -346,11 +405,7 @@ impl Render for GitMasterApp {
         #[cfg(feature = "test-rpc")]
         {
             cx.on_next_frame(window, |this, _window, cx| {
-                let changed = this.process_test_commands();
-                if changed {
-                    cx.notify();
-                }
-                this.publish_test_view_tree();
+                this.schedule_test_view_tree_publish(cx);
             });
         }
 
@@ -378,5 +433,119 @@ impl Render for GitMasterApp {
             .children(context_menu.map(|m| self.track("context-menu", m)));
 
         self.track("root", root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SubmoduleInfo;
+
+    fn repo(name: &str, path: &str, submodules: Vec<SubmoduleInfo>) -> RepoInfo {
+        RepoInfo {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            is_dirty: false,
+            ahead: 0,
+            behind: 0,
+            current_branch: "main".to_string(),
+            submodules,
+        }
+    }
+
+    fn submodule(name: &str, path: &str, relative_path: &str) -> SubmoduleInfo {
+        SubmoduleInfo {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            relative_path: PathBuf::from(relative_path),
+            url: None,
+            is_initialized: true,
+            is_dirty: false,
+            ahead: 0,
+            behind: 0,
+            current_branch: "main".to_string(),
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn repo_refresh_ignores_results_for_a_replaced_repo() {
+        let mut app = GitMasterApp::new();
+        app.repos = vec![repo("current", "/repos/current", Vec::new())];
+
+        app.apply_repo_refresh(
+            0,
+            Path::new("/repos/previous"),
+            Some(repo("stale", "/repos/previous", Vec::new())),
+        );
+
+        assert_eq!(app.repos[0].name, "current");
+        assert_eq!(app.repos[0].path, PathBuf::from("/repos/current"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn begin_scan_cancels_push_preflight() {
+        let mut app = GitMasterApp::new();
+        app.busy = true;
+        app.status_message = Some("Checking upstream…".to_string());
+        app.push_preflight_task = Some(Task::ready(()));
+
+        app.begin_scan(PathBuf::from("/repos/new-parent"));
+
+        assert!(app.push_preflight_task.is_none());
+        assert!(!app.busy);
+        assert!(app.status_message.is_none());
+    }
+
+    #[::core::prelude::v1::test]
+    fn repo_refresh_reconciles_submodule_selection_by_relative_path() {
+        let mut app = GitMasterApp::new();
+        app.repos = vec![repo(
+            "repo",
+            "/repos/repo",
+            vec![
+                submodule("first", "/repos/repo/first", "first"),
+                submodule("target", "/repos/repo/target", "target"),
+            ],
+        )];
+        app.selected = Some(RepoSelection::Submodule {
+            repo_index: 0,
+            submodule_index: 1,
+            relative_path: PathBuf::from("target"),
+        });
+
+        app.apply_repo_refresh(
+            0,
+            Path::new("/repos/repo"),
+            Some(repo(
+                "repo",
+                "/repos/repo",
+                vec![
+                    submodule("target", "/repos/repo/target", "target"),
+                    submodule("first", "/repos/repo/first", "first"),
+                ],
+            )),
+        );
+
+        assert_eq!(
+            app.selected,
+            Some(RepoSelection::Submodule {
+                repo_index: 0,
+                submodule_index: 0,
+                relative_path: PathBuf::from("target"),
+            })
+        );
+    }
+
+    #[cfg(feature = "test-rpc")]
+    #[::core::prelude::v1::test]
+    fn test_rpc_selection_prepares_background_detail_work() {
+        let mut app = GitMasterApp::new();
+        app.repos = vec![repo("repo", "/repos/repo", Vec::new())];
+
+        let request = app.prepare_test_command(crate::test_rpc::server::TestCommand::SelectRepo(0));
+
+        assert!(request.is_some());
+        assert!(app.loading_detail);
+        assert_eq!(app.selected, Some(RepoSelection::Repo(0)));
     }
 }

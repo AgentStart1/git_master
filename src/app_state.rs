@@ -95,6 +95,12 @@ impl GitMasterApp {
     /// The actual `scan_repos` work happens off-thread; results land via
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
+        let was_checking_upstream = self.status_message.as_deref() == Some("Checking upstream…");
+        self.push_preflight_task = None;
+        if was_checking_upstream {
+            self.busy = false;
+            self.status_message = None;
+        }
         self.parent_dir = Some(path);
         self.repos.clear();
         self.selected = None;
@@ -474,6 +480,20 @@ mod tests {
 
         assert_eq!(app.repos[0].name, "current");
         assert_eq!(app.repos[0].path, PathBuf::from("/repos/current"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn begin_scan_cancels_push_preflight() {
+        let mut app = GitMasterApp::new();
+        app.busy = true;
+        app.status_message = Some("Checking upstream…".to_string());
+        app.push_preflight_task = Some(Task::ready(()));
+
+        app.begin_scan(PathBuf::from("/repos/new-parent"));
+
+        assert!(app.push_preflight_task.is_none());
+        assert!(!app.busy);
+        assert!(app.status_message.is_none());
     }
 
     #[::core::prelude::v1::test]

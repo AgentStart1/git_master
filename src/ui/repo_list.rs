@@ -3,7 +3,7 @@ use gpui::*;
 use crate::app_state::{GitMasterApp, RepoSelection};
 use crate::git_ops;
 use crate::models::SubmoduleDetail;
-use crate::ui::theme;
+use crate::ui::{commit_canvas, theme};
 
 impl GitMasterApp {
     pub fn render_repo_list(&self, _window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
@@ -45,19 +45,20 @@ impl GitMasterApp {
                     .bg(bg)
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _event, _window, cx| {
-                        let Some(repo) = this.repos.get(i) else {
+                        let Some(repo) = this.repos.get(i).cloned() else {
                             return;
                         };
                         let path = repo.path.clone();
                         this.begin_select(i);
                         cx.notify();
                         this.detail_task = Some(cx.spawn(async move |entity, cx| {
-                            let (detail, log_entries) = cx
+                            let (detail, log_entries, canvas_layout) = cx
                                 .background_executor()
                                 .spawn(async move {
                                     (
                                         git_ops::get_repo_detail(&path),
                                         git_ops::get_commit_log(&path, 200),
+                                        commit_canvas::load_layout(&repo, 200),
                                     )
                                 })
                                 .await;
@@ -68,6 +69,7 @@ impl GitMasterApp {
                                         detail,
                                         None,
                                         log_entries,
+                                        canvas_layout,
                                     );
                                     cx.notify();
                                 })
@@ -192,6 +194,7 @@ impl GitMasterApp {
                             is_initialized: submodule.is_initialized,
                         };
                         let is_initialized = submodule.is_initialized;
+                        let graph_repo = repo.clone();
 
                         let item = div()
                             .id(ElementId::Name(id.clone().into()))
@@ -210,18 +213,24 @@ impl GitMasterApp {
                                 let path = path.clone();
                                 let relative_path = relative_path.clone();
                                 let submodule_detail = submodule_detail.clone();
+                                let graph_repo = graph_repo.clone();
                                 this.detail_task = Some(cx.spawn(async move |entity, cx| {
-                                    let (detail, log_entries) = cx
+                                    let (detail, log_entries, canvas_layout) = cx
                                         .background_executor()
                                         .spawn(async move {
-                                            if is_initialized {
+                                            let (detail, log_entries) = if is_initialized {
                                                 (
                                                     git_ops::get_repo_detail(&path),
                                                     git_ops::get_commit_log(&path, 200),
                                                 )
                                             } else {
                                                 (None, Vec::new())
-                                            }
+                                            };
+                                            (
+                                                detail,
+                                                log_entries,
+                                                commit_canvas::load_layout(&graph_repo, 200),
+                                            )
                                         })
                                         .await;
                                     entity
@@ -235,6 +244,7 @@ impl GitMasterApp {
                                                 detail,
                                                 Some(submodule_detail),
                                                 log_entries,
+                                                canvas_layout,
                                             );
                                             cx.notify();
                                         })

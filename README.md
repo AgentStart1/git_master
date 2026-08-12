@@ -10,7 +10,8 @@ A desktop application built with [GPUI](https://www.gpui.rs/) for viewing the st
   - Whether the working tree is clean (`✓` in green / `●` in red)
   - Its `↑ahead ↓behind` counts relative to the upstream branch
 - **Details panel (Info tab)**: Displays the repository path, current branch, remote URL, and file status counts (added / modified / deleted / renamed / conflicted).
-- **Commit history (Git Log tab)**: Displays the latest 200 commits, including the short hash, commit message, author, and timestamp.
+- **Commit history (Git Log tab)**: Switch between a traditional list and an infinite commit canvas for the latest 200 commits. The canvas supports draggable commit nodes, background panning, and wheel zooming.
+- **Main/submodule commit graph**: The canvas places the main repository and its direct submodules in adjacent lanes. Dashed links show which submodule commit each main-repository commit records through its Git gitlink. References outside the loaded history, and references to uninitialized submodules, remain visible as placeholder nodes.
 - **Submodule support**: Repositories containing submodules can be expanded in the left sidebar. Select a submodule to view its details and commit history in the right panel.
 - **Submodule initialization**: Uninitialized submodules display their status and URL and can be initialized from the right panel with `git submodule update --init`.
 - **Non-blocking UI**: All Git I/O runs on background threads, keeping the interface responsive while repositories are scanned and details are loaded. Stale scan and detail results are discarded automatically.
@@ -49,10 +50,12 @@ src/
     ├── top_bar.rs       # Top directory selection bar
     ├── repo_list.rs     # Repository list in the left sidebar
     ├── detail_panel.rs  # Details and commit history panel on the right
+    ├── commit_canvas.rs # Commit graph layout and canvas interactions
     └── theme.rs         # Color constants
 ```
 
 ## Notes
 
 - The application does not modify repositories except when the submodule initialization button in the right panel is used.
+- Moving nodes only changes their visual position for the current application session; it does not reorder or modify Git history.
 - Scanning only checks the direct children of the selected parent directory; it does not recursively search nested directories for repositories.

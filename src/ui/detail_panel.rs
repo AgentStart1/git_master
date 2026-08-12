@@ -3,7 +3,8 @@ use gpui::*;
 use crate::app_state::{DetailTab, GitMasterApp, RepoSelection};
 use crate::git_ops;
 use crate::models::{RepoDetail, SubmoduleDetail};
-use crate::ui::theme;
+use crate::ui::commit_canvas::LogViewMode;
+use crate::ui::{commit_canvas, theme};
 
 impl GitMasterApp {
     pub fn render_detail_panel(
@@ -27,7 +28,7 @@ impl GitMasterApp {
         } else if let Some(detail) = self.detail.as_ref() {
             match self.active_tab {
                 DetailTab::Info => self.render_info_tab(detail).into_any_element(),
-                DetailTab::GitLog => self.render_log_tab().into_any_element(),
+                DetailTab::GitLog => self.render_log_tab(cx),
             }
         } else {
             div()
@@ -166,7 +167,74 @@ impl GitMasterApp {
             .into_any_element()
     }
 
-    fn render_log_tab(&self) -> impl IntoElement {
+    fn render_log_tab(&self, cx: &mut Context<'_, Self>) -> AnyElement {
+        let list_bg = if self.log_view_mode == LogViewMode::List {
+            rgb(theme::BG_OVERLAY)
+        } else {
+            rgb(theme::BG_SURFACE)
+        };
+        let canvas_bg = if self.log_view_mode == LogViewMode::Canvas {
+            rgb(theme::BG_OVERLAY)
+        } else {
+            rgb(theme::BG_SURFACE)
+        };
+        let toolbar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .px(px(10.0))
+            .py(px(7.0))
+            .bg(rgb(theme::BG_SURFACE))
+            .border_b_1()
+            .border_color(rgb(theme::BG_OVERLAY))
+            .child(
+                div()
+                    .id("log-view-list")
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded(px(4.0))
+                    .bg(list_bg)
+                    .cursor_pointer()
+                    .text_xs()
+                    .child("List")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_log_view_mode(LogViewMode::List);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .id("log-view-canvas")
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded(px(4.0))
+                    .bg(canvas_bg)
+                    .cursor_pointer()
+                    .text_xs()
+                    .child("Canvas")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_log_view_mode(LogViewMode::Canvas);
+                        cx.notify();
+                    })),
+            );
+
+        let body = match self.log_view_mode {
+            LogViewMode::List => self.render_log_list(),
+            LogViewMode::Canvas => self.render_commit_canvas(cx),
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .overflow_hidden()
+            .child(toolbar)
+            .child(body)
+            .into_any_element()
+    }
+
+    fn render_log_list(&self) -> AnyElement {
         div()
             .id("log-scroll")
             .flex()
@@ -204,6 +272,7 @@ impl GitMasterApp {
                             ),
                     )
             }))
+            .into_any_element()
     }
 }
 
@@ -278,6 +347,7 @@ impl GitMasterApp {
                                     url: submodule.url.clone(),
                                     is_initialized: submodule.is_initialized,
                                 });
+                                let graph_repo = this.repos[repo_index].clone();
                                 let selection = RepoSelection::Submodule {
                                     repo_index,
                                     submodule_index,
@@ -286,12 +356,13 @@ impl GitMasterApp {
                                 this.loading_detail = true;
                                 cx.notify();
                                 this.detail_task = Some(cx.spawn(async move |entity, cx| {
-                                    let (detail, log_entries) = cx
+                                    let (detail, log_entries, canvas_layout) = cx
                                         .background_executor()
                                         .spawn(async move {
                                             (
                                                 git_ops::get_repo_detail(&path),
                                                 git_ops::get_commit_log(&path, 200),
+                                                commit_canvas::load_layout(&graph_repo, 200),
                                             )
                                         })
                                         .await;
@@ -302,6 +373,7 @@ impl GitMasterApp {
                                                 detail,
                                                 submodule_detail,
                                                 log_entries,
+                                                canvas_layout,
                                             );
                                             cx.notify();
                                         })

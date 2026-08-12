@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use gpui::*;
 
 use crate::models::{LogEntry, RepoDetail, RepoInfo, SubmoduleDetail};
+use crate::ui::commit_canvas::{
+    CanvasInteraction, CommitCanvasLayout, CommitCanvasState, LogViewMode,
+};
 use crate::ui::theme;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -39,6 +42,10 @@ pub struct GitMasterApp {
     pub detail: Option<RepoDetail>,
     pub submodule_detail: Option<SubmoduleDetail>,
     pub log_entries: Vec<LogEntry>,
+    pub log_view_mode: LogViewMode,
+    pub commit_canvas_layout: Option<CommitCanvasLayout>,
+    pub commit_canvas_states: HashMap<PathBuf, CommitCanvasState>,
+    pub commit_canvas_interaction: Option<CanvasInteraction>,
     pub scanning: bool,
     pub loading_detail: bool,
     pub context_menu: Option<ContextMenu>,
@@ -70,6 +77,10 @@ impl GitMasterApp {
             detail: None,
             submodule_detail: None,
             log_entries: Vec::new(),
+            log_view_mode: LogViewMode::List,
+            commit_canvas_layout: None,
+            commit_canvas_states: HashMap::new(),
+            commit_canvas_interaction: None,
             scanning: false,
             loading_detail: false,
             context_menu: None,
@@ -108,6 +119,8 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
+        self.commit_canvas_layout = None;
+        self.commit_canvas_interaction = None;
         self.scanning = true;
         self.loading_detail = false;
         self.detail_task = None;
@@ -134,6 +147,8 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
+        self.commit_canvas_layout = None;
+        self.commit_canvas_interaction = None;
         self.loading_detail = true;
     }
 
@@ -153,6 +168,8 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
+        self.commit_canvas_layout = None;
+        self.commit_canvas_interaction = None;
         self.loading_detail = true;
     }
 
@@ -164,6 +181,7 @@ impl GitMasterApp {
         detail: Option<RepoDetail>,
         submodule_detail: Option<SubmoduleDetail>,
         log_entries: Vec<LogEntry>,
+        commit_canvas_layout: Option<CommitCanvasLayout>,
     ) {
         if self.selected.as_ref() != Some(&selection) {
             return;
@@ -171,11 +189,24 @@ impl GitMasterApp {
         self.detail = detail;
         self.submodule_detail = submodule_detail;
         self.log_entries = log_entries;
+        if let Some(layout) = commit_canvas_layout.as_ref() {
+            self.commit_canvas_states
+                .entry(layout.repository_path.clone())
+                .or_default()
+                .ensure_layout(layout);
+        }
+        self.commit_canvas_layout = commit_canvas_layout;
+        self.commit_canvas_interaction = None;
         self.loading_detail = false;
     }
 
     pub fn set_tab(&mut self, tab: DetailTab) {
         self.active_tab = tab;
+    }
+
+    pub fn set_log_view_mode(&mut self, mode: LogViewMode) {
+        self.log_view_mode = mode;
+        self.commit_canvas_interaction = None;
     }
 
     pub fn toggle_repo_expanded(&mut self, index: usize) {
@@ -252,6 +283,8 @@ impl GitMasterApp {
             self.detail = None;
             self.submodule_detail = None;
             self.log_entries.clear();
+            self.commit_canvas_layout = None;
+            self.commit_canvas_interaction = None;
             self.loading_detail = false;
             return;
         };
@@ -285,7 +318,8 @@ impl GitMasterApp {
     ) -> Option<TestDetailRequest> {
         match command {
             crate::test_rpc::server::TestCommand::SelectRepo(index) => {
-                let path = self.repos.get(index)?.path.clone();
+                let graph_repo = self.repos.get(index)?.clone();
+                let path = graph_repo.path.clone();
                 let selection = RepoSelection::Repo(index);
                 self.begin_select(index);
                 Some(TestDetailRequest {
@@ -293,6 +327,7 @@ impl GitMasterApp {
                     path,
                     submodule_detail: None,
                     is_initialized: true,
+                    graph_repo,
                 })
             }
             crate::test_rpc::server::TestCommand::ToggleRepo(index) => {
@@ -317,6 +352,7 @@ impl GitMasterApp {
                     is_initialized: submodule.is_initialized,
                 });
                 let is_initialized = submodule.is_initialized;
+                let graph_repo = self.repos.get(repo_index)?.clone();
                 let selection = RepoSelection::Submodule {
                     repo_index,
                     submodule_index,
@@ -328,12 +364,21 @@ impl GitMasterApp {
                     path,
                     submodule_detail,
                     is_initialized,
+                    graph_repo,
                 })
             }
             crate::test_rpc::server::TestCommand::SetTab(tab) => {
                 match tab.as_str() {
                     "info" => self.set_tab(DetailTab::Info),
                     "log" => self.set_tab(DetailTab::GitLog),
+                    _ => {}
+                }
+                None
+            }
+            crate::test_rpc::server::TestCommand::SetLogView(view) => {
+                match view.as_str() {
+                    "list" => self.set_log_view_mode(LogViewMode::List),
+                    "canvas" => self.set_log_view_mode(LogViewMode::Canvas),
                     _ => {}
                 }
                 None
@@ -348,6 +393,7 @@ impl GitMasterApp {
             result.detail,
             result.submodule_detail,
             result.log_entries,
+            result.commit_canvas_layout,
         );
     }
 
@@ -370,6 +416,7 @@ pub struct TestDetailRequest {
     path: PathBuf,
     submodule_detail: Option<SubmoduleDetail>,
     is_initialized: bool,
+    graph_repo: RepoInfo,
 }
 
 #[cfg(feature = "test-rpc")]
@@ -378,6 +425,7 @@ pub struct TestDetailResult {
     detail: Option<RepoDetail>,
     submodule_detail: Option<SubmoduleDetail>,
     log_entries: Vec<LogEntry>,
+    commit_canvas_layout: Option<CommitCanvasLayout>,
 }
 
 #[cfg(feature = "test-rpc")]
@@ -396,6 +444,7 @@ impl TestDetailRequest {
             detail,
             submodule_detail: self.submodule_detail,
             log_entries,
+            commit_canvas_layout: crate::ui::commit_canvas::load_layout(&self.graph_repo, 200),
         }
     }
 }

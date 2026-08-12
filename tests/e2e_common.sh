@@ -64,6 +64,11 @@ rpc_set_tab() {
     rpc "{\"jsonrpc\":\"2.0\",\"method\":\"set_tab\",\"params\":{\"tab\":\"$1\"},\"id\":$RPC_ID}"
 }
 
+rpc_set_log_view() {
+    RPC_ID=$((RPC_ID + 1))
+    rpc "{\"jsonrpc\":\"2.0\",\"method\":\"set_log_view\",\"params\":{\"view\":\"$1\"},\"id\":$RPC_ID}"
+}
+
 wait_for_node() {
     local node_id="$1"
     local timeout="${2:-10}"

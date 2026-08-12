@@ -18,6 +18,7 @@ pub enum TestCommand {
         submodule_index: usize,
     },
     SetTab(String),
+    SetLogView(String),
 }
 
 pub type CommandQueue = Arc<Mutex<Vec<TestCommand>>>;
@@ -94,9 +95,7 @@ fn handle_request(
         }
     };
 
-    if req.get("id").is_none() {
-        return None;
-    }
+    req.get("id")?;
 
     let id = req["id"].clone();
     let method = req.get("method").and_then(|m| m.as_str());
@@ -193,6 +192,25 @@ fn handle_request(
                 None => Some(json!({
                     "jsonrpc": "2.0",
                     "error": { "code": -32602, "message": "Missing params.tab" },
+                    "id": id
+                })),
+            }
+        }
+        Some("set_log_view") => {
+            let view = params
+                .and_then(|p| p.get("view"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            match view {
+                Some(view) => {
+                    if let Ok(mut q) = commands.lock() {
+                        q.push(TestCommand::SetLogView(view));
+                    }
+                    Some(json!({ "jsonrpc": "2.0", "result": "ok", "id": id }))
+                }
+                None => Some(json!({
+                    "jsonrpc": "2.0",
+                    "error": { "code": -32602, "message": "Missing params.view" },
                     "id": id
                 })),
             }

@@ -194,7 +194,6 @@ impl GitMasterApp {
                             is_initialized: submodule.is_initialized,
                         };
                         let is_initialized = submodule.is_initialized;
-                        let graph_repo = repo.clone();
 
                         let item = div()
                             .id(ElementId::Name(id.clone().into()))
@@ -213,7 +212,6 @@ impl GitMasterApp {
                                 let path = path.clone();
                                 let relative_path = relative_path.clone();
                                 let submodule_detail = submodule_detail.clone();
-                                let graph_repo = graph_repo.clone();
                                 this.detail_task = Some(cx.spawn(async move |entity, cx| {
                                     let (detail, log_entries, canvas_layout) = cx
                                         .background_executor()
@@ -229,7 +227,13 @@ impl GitMasterApp {
                                             (
                                                 detail,
                                                 log_entries,
-                                                commit_canvas::load_layout(&graph_repo, 200),
+                                                is_initialized
+                                                    .then(|| {
+                                                        commit_canvas::load_layout_for_path(
+                                                            &path, 200,
+                                                        )
+                                                    })
+                                                    .flatten(),
                                             )
                                         })
                                         .await;

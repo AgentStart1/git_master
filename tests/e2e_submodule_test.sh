@@ -150,17 +150,54 @@ print(f'  Initialized submodule commit nodes: {len(submodule_nodes)}')
 " || fail "Test 3"
 pass "Canvas renders initialized submodule commit history beside the main repository"
 
-# ── Test 4: select the uninitialized submodule ──
+# ── Test 4: select initialized submodule → own canvas ──
 
 echo ""
-echo "=== Test 4: Select uninitialized submodule ==="
+echo "=== Test 4: Selected submodule owns its canvas ==="
+rpc_toggle_repo 1 > /dev/null
+sleep 1
+wait_for_node "repo-1-submodule-0" 10 > /dev/null
+rpc_select_submodule 1 0 > /dev/null
+sleep 1
+rpc_set_tab "log" > /dev/null
+rpc_set_log_view "canvas" > /dev/null
+sleep 1
+
+TREE4=$(wait_for_node "commit-canvas" 10)
+
+echo "$TREE4" | python3 -c "
+import json, sys
+tree = json.loads(sys.stdin.read())['result']
+def find(n, nid):
+    if n.get('id') == nid: return n
+    for c in n.get('children', []):
+        r = find(c, nid)
+        if r: return r
+    return None
+
+canvas = find(tree, 'commit-canvas')
+assert canvas, 'commit-canvas not found'
+lanes = [c.get('text') for c in canvas.get('children', []) if c.get('node_type') == 'group']
+assert lanes == ['lib'], f'Expected only selected lib lane, got: {lanes}'
+nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
+texts = [child.get('text', '') for node in nodes for child in node.get('children', [])]
+assert any('init lib' in text for text in texts), f'Submodule history missing: {texts}'
+assert not any('add submodule' in text for text in texts), f'Parent history leaked into canvas: {texts}'
+print('  Selected submodule lanes:', lanes)
+" || fail "Test 4"
+pass "Selected submodule canvas matches its own Git Log history"
+
+# ── Test 5: select the uninitialized submodule ──
+
+echo ""
+echo "=== Test 5: Select uninitialized submodule ==="
 
 rpc_select_submodule 0 0 > /dev/null
 sleep 1
 
-TREE4=$(wait_for_node "submodule-info-content" 10)
+TREE5=$(wait_for_node "submodule-info-content" 10)
 
-echo "$TREE4" | python3 -c "
+echo "$TREE5" | python3 -c "
 import json, sys
 tree = json.loads(sys.stdin.read())['result']
 def find(n, nid):
@@ -177,7 +214,7 @@ print(f'  Submodule info labels: {labels}')
 assert any(l.startswith('Path:') and 'modules/lib' in l for l in labels), labels
 assert 'Status: Not initialized' in labels, labels
 assert find(tree, 'init-submodule-btn'), 'Initialize button not found'
-" || fail "Test 4 detail"
+" || fail "Test 5 detail"
 pass "Uninitialized submodule can be selected"
 
 # ── Done ──

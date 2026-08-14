@@ -142,6 +142,16 @@ pub fn load_layout(repo_info: &RepoInfo, limit: usize) -> Option<CommitCanvasLay
     git_ops::get_commit_graph(repo_info, limit).map(|graph| build_layout(&graph))
 }
 
+/// Discovers a repository and prepares its graph layout. Call this only from
+/// a background executor when the selected repository is not already loaded.
+pub fn load_layout_for_path(
+    repo_path: &std::path::Path,
+    limit: usize,
+) -> Option<CommitCanvasLayout> {
+    let repo_info = git_ops::build_repo_info(repo_path)?;
+    load_layout(&repo_info, limit)
+}
+
 pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
     let lanes = graph
         .lanes

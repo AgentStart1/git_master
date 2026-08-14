@@ -327,7 +327,7 @@ impl GitMasterApp {
                     path,
                     submodule_detail: None,
                     is_initialized: true,
-                    graph_repo,
+                    graph_path: Some(graph_repo.path),
                 })
             }
             crate::test_rpc::server::TestCommand::ToggleRepo(index) => {
@@ -352,7 +352,6 @@ impl GitMasterApp {
                     is_initialized: submodule.is_initialized,
                 });
                 let is_initialized = submodule.is_initialized;
-                let graph_repo = self.repos.get(repo_index)?.clone();
                 let selection = RepoSelection::Submodule {
                     repo_index,
                     submodule_index,
@@ -364,7 +363,14 @@ impl GitMasterApp {
                     path,
                     submodule_detail,
                     is_initialized,
-                    graph_repo,
+                    graph_path: is_initialized
+                        .then(|| {
+                            self.repos
+                                .get(repo_index)
+                                .and_then(|repo| repo.submodules.get(submodule_index))
+                                .map(|submodule| submodule.path.clone())
+                        })
+                        .flatten(),
                 })
             }
             crate::test_rpc::server::TestCommand::SetTab(tab) => {
@@ -416,7 +422,7 @@ pub struct TestDetailRequest {
     path: PathBuf,
     submodule_detail: Option<SubmoduleDetail>,
     is_initialized: bool,
-    graph_repo: RepoInfo,
+    graph_path: Option<PathBuf>,
 }
 
 #[cfg(feature = "test-rpc")]
@@ -444,7 +450,10 @@ impl TestDetailRequest {
             detail,
             submodule_detail: self.submodule_detail,
             log_entries,
-            commit_canvas_layout: crate::ui::commit_canvas::load_layout(&self.graph_repo, 200),
+            commit_canvas_layout: self
+                .graph_path
+                .as_deref()
+                .and_then(|path| crate::ui::commit_canvas::load_layout_for_path(path, 200)),
         }
     }
 }
@@ -596,5 +605,25 @@ mod tests {
         assert!(request.is_some());
         assert!(app.loading_detail);
         assert_eq!(app.selected, Some(RepoSelection::Repo(0)));
+    }
+
+    #[cfg(feature = "test-rpc")]
+    #[::core::prelude::v1::test]
+    fn test_rpc_submodule_canvas_uses_the_selected_submodule_path() {
+        let mut app = GitMasterApp::new();
+        app.repos = vec![repo(
+            "repo",
+            "/repos/repo",
+            vec![submodule("lib", "/repos/repo/lib", "lib")],
+        )];
+
+        let request = app
+            .prepare_test_command(crate::test_rpc::server::TestCommand::SelectSubmodule {
+                repo_index: 0,
+                submodule_index: 0,
+            })
+            .unwrap();
+
+        assert_eq!(request.graph_path, Some(PathBuf::from("/repos/repo/lib")));
     }
 }

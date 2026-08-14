@@ -347,7 +347,6 @@ impl GitMasterApp {
                                     url: submodule.url.clone(),
                                     is_initialized: submodule.is_initialized,
                                 });
-                                let graph_repo = this.repos[repo_index].clone();
                                 let selection = RepoSelection::Submodule {
                                     repo_index,
                                     submodule_index,
@@ -362,7 +361,7 @@ impl GitMasterApp {
                                             (
                                                 git_ops::get_repo_detail(&path),
                                                 git_ops::get_commit_log(&path, 200),
-                                                commit_canvas::load_layout(&graph_repo, 200),
+                                                commit_canvas::load_layout_for_path(&path, 200),
                                             )
                                         })
                                         .await;

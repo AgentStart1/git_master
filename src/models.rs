@@ -51,8 +51,40 @@ pub struct FileStatusSummary {
 
 #[derive(Clone, Debug)]
 pub struct LogEntry {
+    pub full_hash: String,
     pub hash: String,
+    pub parent_hashes: Vec<String>,
     pub author: String,
     pub date: String,
     pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommitLaneStatus {
+    Available,
+    Uninitialized,
+    Unavailable,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitLane {
+    pub id: String,
+    pub name: String,
+    pub relative_path: Option<PathBuf>,
+    pub status: CommitLaneStatus,
+    pub entries: Vec<LogEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubmoduleCommitLink {
+    pub main_commit: String,
+    pub submodule_lane: String,
+    pub submodule_commit: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitGraph {
+    pub repository_path: PathBuf,
+    pub lanes: Vec<CommitLane>,
+    pub submodule_links: Vec<SubmoduleCommitLink>,
 }

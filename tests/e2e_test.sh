@@ -141,8 +141,8 @@ def find(n, nid):
         if r: return r
     return None
 
-log = find(tree, 'log-content')
-assert log, 'log-content not found'
+log = find(tree, 'log-list')
+assert log, 'log-list not found'
 
 entries = log.get('children', [])
 print(f'  Log entries: {len(entries)}')
@@ -160,6 +160,41 @@ assert any('Add feature A' in m for m in messages), f'\"Add feature A\" not in l
 assert any('init alpha' in m for m in messages), f'\"init alpha\" not in log: {messages}'
 " || fail "Test 3"
 pass "Git Log tab shows 3 commits for alpha"
+
+# ── Test 4: switch Git Log to canvas ──
+
+echo ""
+echo "=== Test 4: Switch Git Log to canvas ==="
+rpc_set_log_view "canvas" > /dev/null
+sleep 1
+
+TREE4=$(wait_for_node "commit-canvas" 10)
+
+echo "$TREE4" | python3 -c "
+import json, sys
+tree = json.loads(sys.stdin.read())['result']
+def find(n, nid):
+    if n.get('id') == nid: return n
+    for c in n.get('children', []):
+        r = find(c, nid)
+        if r: return r
+    return None
+
+canvas = find(tree, 'commit-canvas')
+assert canvas, 'commit-canvas not found'
+lanes = [c for c in canvas.get('children', []) if c.get('node_type') == 'group']
+nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
+assert any(lane.get('text') == 'alpha' for lane in lanes), f'alpha lane not found: {lanes}'
+assert len(nodes) >= 3, f'Expected >= 3 canvas commit nodes, got {len(nodes)}'
+messages = [
+    child.get('text', '')
+    for node in nodes
+    for child in node.get('children', [])
+]
+assert any('Fix bug B' in message for message in messages), f'Fix bug B not in canvas: {messages}'
+print(f'  Canvas lanes: {len(lanes)}, commit nodes: {len(nodes)}')
+" || fail "Test 4"
+pass "Git Log canvas renders the main repository commit graph"
 
 # ── Done ──
 

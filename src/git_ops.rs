@@ -3,9 +3,12 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::TimeZone;
-use git2::{BranchType, Repository, Sort, StatusOptions};
+use git2::{BranchType, Oid, Repository, Sort, StatusOptions};
 
-use crate::models::{FileStatusSummary, LogEntry, RepoDetail, RepoInfo, SubmoduleInfo};
+use crate::models::{
+    CommitGraph, CommitLane, CommitLaneStatus, FileStatusSummary, LogEntry, RepoDetail, RepoInfo,
+    SubmoduleCommitLink, SubmoduleInfo,
+};
 
 pub fn scan_repos(parent_dir: &Path) -> Vec<RepoInfo> {
     let mut repos = Vec::new();
@@ -61,7 +64,7 @@ pub fn list_local_branches(repo_path: &Path) -> Vec<String> {
         .filter_map(|b| b.ok())
         .filter_map(|(b, _)| b.name().ok().flatten().map(String::from))
         .collect();
-    branches.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    branches.sort_by_cached_key(|branch| branch.to_lowercase());
     branches
 }
 
@@ -95,19 +98,19 @@ where
 }
 
 pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<String, String> {
-    run_git(repo_path, &["checkout", branch])
+    run_git(repo_path, ["checkout", branch])
 }
 
 pub fn pull_rebase(repo_path: &Path) -> Result<String, String> {
-    run_git(repo_path, &["pull", "--rebase"])
+    run_git(repo_path, ["pull", "--rebase"])
 }
 
 pub fn push(repo_path: &Path) -> Result<String, String> {
-    run_git(repo_path, &["push"])
+    run_git(repo_path, ["push"])
 }
 
 pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, String> {
-    run_git(repo_path, &["push", "-u", "origin", branch])
+    run_git(repo_path, ["push", "-u", "origin", branch])
 }
 
 pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, String> {
@@ -143,7 +146,7 @@ fn list_submodules(repo_path: &Path, repo: &Repository) -> Vec<SubmoduleInfo> {
         .ok()
         .into_iter()
         .flatten()
-        .filter_map(|submodule| {
+        .map(|submodule| {
             let relative_path = submodule.path().to_path_buf();
             let path = repo_path.join(&relative_path);
             let name = submodule
@@ -169,7 +172,7 @@ fn list_submodules(repo_path: &Path, repo: &Repository) -> Vec<SubmoduleInfo> {
                 })
                 .unwrap_or_else(|| ("Not initialized".to_string(), false, 0, 0));
 
-            Some(SubmoduleInfo {
+            SubmoduleInfo {
                 name,
                 path,
                 relative_path,
@@ -179,7 +182,7 @@ fn list_submodules(repo_path: &Path, repo: &Repository) -> Vec<SubmoduleInfo> {
                 ahead,
                 behind,
                 current_branch,
-            })
+            }
         })
         .collect();
 
@@ -188,11 +191,85 @@ fn list_submodules(repo_path: &Path, repo: &Repository) -> Vec<SubmoduleInfo> {
 }
 
 pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
-    let mut entries = Vec::new();
     let repo = match Repository::open(repo_path) {
         Ok(r) => r,
-        Err(_) => return entries,
+        Err(_) => return Vec::new(),
     };
+    read_commit_log(&repo, limit)
+}
+
+pub fn get_commit_graph(repo_info: &RepoInfo, limit: usize) -> Option<CommitGraph> {
+    let repo = Repository::open(&repo_info.path).ok()?;
+    let main_entries = read_commit_log(&repo, limit);
+    let mut lanes = Vec::with_capacity(repo_info.submodules.len() + 1);
+    lanes.push(CommitLane {
+        id: "main".to_string(),
+        name: repo_info.name.clone(),
+        relative_path: None,
+        status: CommitLaneStatus::Available,
+        entries: main_entries.clone(),
+    });
+
+    for submodule in &repo_info.submodules {
+        let id = submodule_lane_id(&submodule.relative_path);
+        let (status, entries) = if !submodule.is_initialized {
+            (CommitLaneStatus::Uninitialized, Vec::new())
+        } else if let Ok(submodule_repo) = Repository::open(&submodule.path) {
+            (
+                CommitLaneStatus::Available,
+                read_commit_log(&submodule_repo, limit),
+            )
+        } else {
+            (CommitLaneStatus::Unavailable, Vec::new())
+        };
+        lanes.push(CommitLane {
+            id,
+            name: submodule.name.clone(),
+            relative_path: Some(submodule.relative_path.clone()),
+            status,
+            entries,
+        });
+    }
+
+    let mut submodule_links = Vec::new();
+    for entry in &main_entries {
+        let Ok(oid) = Oid::from_str(&entry.full_hash) else {
+            continue;
+        };
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        let Ok(tree) = commit.tree() else {
+            continue;
+        };
+        for submodule in &repo_info.submodules {
+            let Ok(tree_entry) = tree.get_path(&submodule.relative_path) else {
+                continue;
+            };
+            if tree_entry.filemode() != 0o160000 {
+                continue;
+            }
+            submodule_links.push(SubmoduleCommitLink {
+                main_commit: entry.full_hash.clone(),
+                submodule_lane: submodule_lane_id(&submodule.relative_path),
+                submodule_commit: tree_entry.id().to_string(),
+            });
+        }
+    }
+
+    Some(CommitGraph {
+        repository_path: repo_info.path.clone(),
+        lanes,
+        submodule_links,
+    })
+}
+
+fn submodule_lane_id(relative_path: &Path) -> String {
+    format!("submodule:{}", relative_path.to_string_lossy())
+}
+
+fn read_commit_log(repo: &Repository, limit: usize) -> Vec<LogEntry> {
+    let mut entries = Vec::new();
     let mut revwalk = match repo.revwalk() {
         Ok(r) => r,
         Err(_) => return entries,
@@ -205,8 +282,9 @@ pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let hash = commit.id().to_string();
-        let hash = hash[..7.min(hash.len())].to_string();
+        let full_hash = commit.id().to_string();
+        let hash = full_hash[..7.min(full_hash.len())].to_string();
+        let parent_hashes = commit.parent_ids().map(|id| id.to_string()).collect();
         let author = commit.author().name().unwrap_or("unknown").to_string();
         let time = commit.time();
         let date = chrono::Utc
@@ -223,7 +301,9 @@ pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
             .to_string();
 
         entries.push(LogEntry {
+            full_hash,
             hash,
+            parent_hashes,
             author,
             date,
             message,

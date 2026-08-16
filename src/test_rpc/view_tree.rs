@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::app_state::{ContextMenu, DetailTab, GitMasterApp, RepoSelection};
 use crate::models::{LogEntry, RepoDetail, RepoInfo, SubmoduleDetail};
+use crate::ui::commit_canvas::{CanvasEdgeKind, CommitCanvasLayout, LogViewMode};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Rect {
@@ -94,6 +95,8 @@ pub struct TestViewTreeSnapshot {
     detail: Option<RepoDetail>,
     submodule_detail: Option<SubmoduleDetail>,
     log_entries: Vec<LogEntry>,
+    log_view_mode: LogViewMode,
+    commit_canvas_layout: Option<CommitCanvasLayout>,
     scanning: bool,
     loading_detail: bool,
     context_menu: Option<ContextMenu>,
@@ -112,6 +115,8 @@ impl GitMasterApp {
             detail: self.detail.clone(),
             submodule_detail: self.submodule_detail.clone(),
             log_entries: self.log_entries.clone(),
+            log_view_mode: self.log_view_mode,
+            commit_canvas_layout: self.commit_canvas_layout.clone(),
             scanning: self.scanning,
             loading_detail: self.loading_detail,
             context_menu: self.context_menu.clone(),
@@ -345,6 +350,33 @@ impl TestViewTreeSnapshot {
     }
 
     fn build_log_node(&self) -> ViewNode {
+        let toolbar = ViewNode::new("panel")
+            .with_id("log-view-toolbar")
+            .with_child(
+                ViewNode::new("button")
+                    .with_id("log-view-list")
+                    .with_text("List")
+                    .with_interactive(),
+            )
+            .with_child(
+                ViewNode::new("button")
+                    .with_id("log-view-canvas")
+                    .with_text("Canvas")
+                    .with_interactive(),
+            );
+
+        let body = match self.log_view_mode {
+            LogViewMode::List => self.build_log_list_node(),
+            LogViewMode::Canvas => self.build_commit_canvas_node(),
+        };
+
+        ViewNode::new("panel")
+            .with_id("log-content")
+            .with_child(toolbar)
+            .with_child(body)
+    }
+
+    fn build_log_list_node(&self) -> ViewNode {
         let entries: Vec<ViewNode> = self
             .log_entries
             .iter()
@@ -359,9 +391,59 @@ impl TestViewTreeSnapshot {
             })
             .collect();
 
-        ViewNode::new("panel")
-            .with_id("log-content")
+        ViewNode::new("list")
+            .with_id("log-list")
             .with_children(entries)
+    }
+
+    fn build_commit_canvas_node(&self) -> ViewNode {
+        let Some(layout) = self.commit_canvas_layout.as_ref() else {
+            return ViewNode::new("panel")
+                .with_id("commit-canvas")
+                .with_child(ViewNode::new("text").with_text("Commit graph is unavailable."));
+        };
+        let lanes = layout.lanes.iter().map(|lane| {
+            ViewNode::new("group")
+                .with_id(&format!("commit-lane-{}", lane.id))
+                .with_text(&lane.name)
+        });
+        let nodes = layout.nodes.iter().map(|node| {
+            let mut view = ViewNode::new("commit-node")
+                .with_id(&format!(
+                    "commit-node-{}-{}",
+                    node.id.lane_id,
+                    node.short_hash()
+                ))
+                .with_interactive()
+                .with_child(ViewNode::new("text").with_text(node.short_hash()));
+            if let Some(entry) = node.entry.as_ref() {
+                view = view.with_child(ViewNode::new("text").with_text(&entry.message));
+            } else {
+                view = view
+                    .with_child(ViewNode::new("text").with_text("Referenced commit not loaded"));
+            }
+            view
+        });
+        let edges = layout.edges.iter().map(|edge| {
+            ViewNode::new("graph-edge").with_text(&format!(
+                "{}:{} -> {}:{} ({})",
+                edge.from.lane_id,
+                &edge.from.commit_id[..7.min(edge.from.commit_id.len())],
+                edge.to.lane_id,
+                &edge.to.commit_id[..7.min(edge.to.commit_id.len())],
+                match edge.kind {
+                    CanvasEdgeKind::Parent => "parent",
+                    CanvasEdgeKind::Submodule => "submodule",
+                }
+            ))
+        });
+
+        ViewNode::new("canvas")
+            .with_id("commit-canvas")
+            .with_interactive()
+            .with_children(lanes.collect())
+            .with_children(nodes.collect())
+            .with_children(edges.collect())
     }
 
     fn build_context_menu_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> Option<ViewNode> {

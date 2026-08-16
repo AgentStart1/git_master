@@ -1,3 +1,4 @@
+pub mod commit_canvas;
 pub mod detail_panel;
 pub mod repo_list;
 pub mod theme;

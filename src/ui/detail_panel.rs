@@ -704,12 +704,16 @@ impl GitMasterApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        if self.busy || self.selected_remote_action_target().is_none() {
+        if self.busy || self.loading_detail || self.selected_remote_action_target().is_none() {
             return;
         }
 
         self.busy = true;
         self.set_status(format!("Confirm reset to {remote}…"));
+        let expected = self
+            .detail
+            .as_ref()
+            .map(|detail| (detail.path.clone(), detail.current_branch.clone()));
         cx.notify();
         let entity = cx.entity().downgrade();
         self.remote_action_prompt_task = Some(window.spawn(cx, async move |cx| {
@@ -728,7 +732,8 @@ impl GitMasterApp {
                 .await;
             entity
                 .update(cx, |this, cx| {
-                    if answer == Ok(0) {
+                    if answer == Ok(0) && !this.loading_detail
+                        && this.detail.as_ref().map(|detail| (detail.path.clone(), detail.current_branch.clone())) == expected {
                         this.perform_remote_action(remote, true, cx);
                     } else {
                         this.busy = false;

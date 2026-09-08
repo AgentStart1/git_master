@@ -589,6 +589,7 @@ impl GitMasterApp {
                         Err(e) => this.set_status(format!("Checkout failed: {e}")),
                     }
                     this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
+                    this.refresh_pushed_repo_details(repo_index, &refresh_path, cx);
                     this.busy = false;
                     cx.notify();
                 })
@@ -737,7 +738,52 @@ impl GitMasterApp {
                         Err(e) => this.set_status(format!("Push failed: {e}")),
                     }
                     this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
+                    this.refresh_pushed_repo_details(repo_index, &refresh_path, cx);
                     this.busy = false;
+                    cx.notify();
+                })
+                .ok();
+        }));
+    }
+
+    fn refresh_pushed_repo_details(
+        &mut self,
+        repo_index: usize,
+        expected_path: &std::path::Path,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.selected != Some(RepoSelection::Repo(repo_index))
+            || self.repos.get(repo_index).map(|repo| repo.path.as_path()) != Some(expected_path)
+        {
+            return;
+        }
+        let path = expected_path.to_path_buf();
+        self.loading_detail = true;
+        let branches = self
+            .canvas_visible_branches
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.detail_task = Some(cx.spawn(async move |entity, cx| {
+            let expected = path.clone();
+            let (detail, log, layout) = cx
+                .background_executor()
+                .spawn(async move {
+                    (
+                        git_ops::get_repo_detail(&path),
+                        git_ops::get_commit_log(&path, 200),
+                        commit_canvas::load_layout_for_branches(&path, &branches, 200),
+                    )
+                })
+                .await;
+            entity
+                .update(cx, |this, cx| {
+                    if this.repos.get(repo_index).map(|repo| repo.path.as_path())
+                        != Some(expected.as_path())
+                    {
+                        return;
+                    }
+                    this.apply_detail(RepoSelection::Repo(repo_index), detail, None, log, layout);
                     cx.notify();
                 })
                 .ok();

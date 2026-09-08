@@ -160,12 +160,25 @@ pub fn reset_to_remote_branch(
     remote: &str,
     branch: &str,
 ) -> Result<String, String> {
-    if branch == "HEAD detached" {
-        return Err("Cannot reset a detached HEAD to a remote branch".to_string());
-    }
+    validate_reset_branch(repo_path, branch)?;
     fetch_remote(repo_path, remote)?;
-    let target = format!("{remote}/{branch}");
-    run_git(repo_path, ["reset", "--hard", &target])
+    validate_reset_branch(repo_path, branch)?;
+    let target = format!("refs/remotes/{remote}/{branch}");
+    run_git(repo_path, ["reset", "--hard", &target, "--"])
+}
+
+fn validate_reset_branch(path: &Path, expected: &str) -> Result<(), String> {
+    let repo = Repository::open(path).map_err(|error| error.to_string())?;
+    let head = repo.head().map_err(|error| error.to_string())?;
+    if !head.is_branch() || head.name().ok() != Some(format!("refs/heads/{expected}").as_str()) {
+        let message = format!(
+            "Reset cancelled: expected branch {expected}, actual HEAD {:?}. Refresh and retry.",
+            head.name().ok()
+        );
+        let _ = crate::operation_log::append(&format!("repo={path:?} {message}"));
+        return Err(message);
+    }
+    Ok(())
 }
 
 pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, String> {

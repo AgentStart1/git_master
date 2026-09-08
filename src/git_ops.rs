@@ -85,15 +85,50 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    let args: Vec<std::ffi::OsString> = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_owned())
+        .collect();
+    let started = std::time::Instant::now();
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let log_start = crate::operation_log::append(&format!(
+        "operation={id} START repo={repo_path:?} git {args:?}"
+    ));
     let output = Command::new("git")
-        .args(args)
+        .args(&args)
         .current_dir(repo_path)
-        .output()
-        .map_err(|e| format!("Failed to run git: {e}"))?;
+        .output();
+    let log_end = crate::operation_log::append(&match &output {
+        Ok(output) => format!(
+            "operation={id} END elapsed_ms={} exit={}\nstdout:\n{}\nstderr:\n{}",
+            started.elapsed().as_millis(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) => format!(
+            "operation={id} SPAWN_FAILED elapsed_ms={} error={error}",
+            started.elapsed().as_millis()
+        ),
+    });
+    let log_hint = match log_start.and(log_end) {
+        Ok(()) => format!("Log: {}", crate::operation_log::log_path().display()),
+        Err(error) => {
+            eprintln!("Operation log write failed: {error}");
+            format!("Log could not be saved: {error}")
+        }
+    };
+    let output = output.map_err(|error| format!("Failed to run git: {error}\n{log_hint}"))?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Err(format!(
+            "{}\n{}\nExit: {}\n{log_hint}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            output.status
+        ))
     }
 }
 

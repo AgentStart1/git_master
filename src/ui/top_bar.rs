@@ -59,6 +59,7 @@ impl GitMasterApp {
 
         div()
             .flex()
+            .flex_shrink_0()
             .flex_row()
             .items_center()
             .gap(px(12.0))

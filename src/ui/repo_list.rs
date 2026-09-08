@@ -5,6 +5,36 @@ use crate::git_ops;
 use crate::models::SubmoduleDetail;
 use crate::ui::{commit_canvas, theme};
 
+fn repo_scrollbar_geometry(height: f32, max_offset: f32, offset: f32) -> (f32, f32) {
+    let height = height.max(0.0);
+    let thumb = if max_offset <= 0.0 {
+        height
+    } else {
+        (height * height / (height + max_offset))
+            .max(24.0)
+            .min(height)
+    };
+    let top = if max_offset > 0.0 {
+        (-offset / max_offset).clamp(0.0, 1.0) * (height - thumb)
+    } else {
+        0.0
+    };
+    (thumb, top)
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::repo_scrollbar_geometry;
+
+    #[test]
+    fn thumb_reaches_both_ends_and_handles_short_viewports() {
+        assert_eq!(repo_scrollbar_geometry(100.0, 300.0, 0.0), (25.0, 0.0));
+        assert_eq!(repo_scrollbar_geometry(100.0, 300.0, -300.0), (25.0, 75.0));
+        assert_eq!(repo_scrollbar_geometry(10.0, 300.0, -300.0), (10.0, 0.0));
+        assert_eq!(repo_scrollbar_geometry(100.0, 0.0, 0.0), (100.0, 0.0));
+    }
+}
+
 impl GitMasterApp {
     pub fn render_repo_list(&self, _window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
         let repo_items: Vec<AnyElement> = self
@@ -36,6 +66,7 @@ impl GitMasterApp {
 
                 let item = div()
                     .id(ElementId::Name(format!("repo-{i}").into()))
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -198,6 +229,7 @@ impl GitMasterApp {
 
                         let item = div()
                             .id(ElementId::Name(id.clone().into()))
+                            .flex_shrink_0()
                             .flex()
                             .flex_row()
                             .items_center()
@@ -292,30 +324,120 @@ impl GitMasterApp {
             })
             .collect();
 
-        div()
+        let list = div()
             .id("repo-list")
             .flex()
             .flex_col()
-            .w(px(280.0))
-            .min_w(px(280.0))
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
             .h_full()
             .bg(rgb(theme::BG_BASE))
             .border_r_1()
             .border_color(rgb(theme::BG_OVERLAY))
             .overflow_y_scroll()
-            // GPUI treats a scroll container with a zero-width scrollbar like
-            // an overflow-hidden container. Reserve space so wheel scrolling
-            // and the scrollbar both remain available for long repo lists.
-            .scrollbar_width(px(10.0))
+            .track_scroll(&self.repo_scroll)
             .children(self.scanning.then(|| {
                 div()
+                    .flex_shrink_0()
                     .px(px(10.0))
                     .py(px(8.0))
                     .text_xs()
                     .text_color(rgb(theme::TEXT_SUBTLE))
                     .child("Scanning…")
             }))
-            .children(repo_items)
+            .children(repo_items);
+
+        let handle = self.repo_scroll.clone();
+        let entity = cx.entity();
+        let scrollbar = canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _cx| {
+                let height: f32 = bounds.size.height.into();
+                let max: f32 = handle.max_offset().height.into();
+                let offset: f32 = handle.offset().y.into();
+                let (thumb_height, thumb_top) = repo_scrollbar_geometry(height, max, offset);
+                window.paint_quad(fill(bounds, rgb(theme::BG_SURFACE)));
+                let thumb = Bounds::new(
+                    point(bounds.origin.x + px(2.0), bounds.origin.y + px(thumb_top)),
+                    size(px(8.0), px(thumb_height)),
+                );
+                window.paint_quad(fill(thumb, rgb(theme::TEXT_SUBTLE)));
+                window.on_mouse_event({
+                    let entity = entity.clone();
+                    let handle = handle.clone();
+                    move |event: &MouseDownEvent, phase, _, cx| {
+                        if !phase.bubble()
+                            || event.button != MouseButton::Left
+                            || !bounds.contains(&event.position)
+                        {
+                            return;
+                        }
+                        let y: f32 = (event.position.y - bounds.origin.y).into();
+                        let grab = if y >= thumb_top && y <= thumb_top + thumb_height {
+                            y - thumb_top
+                        } else {
+                            thumb_height / 2.0
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.repo_scroll_drag = Some(grab);
+                            cx.notify();
+                        });
+                        let fraction =
+                            ((y - grab) / (height - thumb_height).max(1.0)).clamp(0.0, 1.0);
+                        handle.set_offset(point(px(0.0), px(-max * fraction)));
+                        cx.stop_propagation();
+                    }
+                });
+                window.on_mouse_event({
+                    let entity = entity.clone();
+                    let handle = handle.clone();
+                    move |event: &MouseMoveEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let Some(grab) = entity.read(cx).repo_scroll_drag else {
+                            return;
+                        };
+                        if !event.dragging() {
+                            return;
+                        }
+                        let y: f32 = (event.position.y - bounds.origin.y).into();
+                        let fraction =
+                            ((y - grab) / (height - thumb_height).max(1.0)).clamp(0.0, 1.0);
+                        handle.set_offset(point(px(0.0), px(-max * fraction)));
+                        entity.update(cx, |_, cx| cx.notify());
+                        cx.stop_propagation();
+                    }
+                });
+                window.on_mouse_event({
+                    let entity = entity.clone();
+                    move |event: &MouseUpEvent, _, _, cx| {
+                        if event.button == MouseButton::Left
+                            && entity.read(cx).repo_scroll_drag.is_some()
+                        {
+                            entity.update(cx, |this, cx| {
+                                this.repo_scroll_drag = None;
+                                cx.notify();
+                            });
+                        }
+                    }
+                });
+            },
+        )
+        .w(px(12.0))
+        .h_full()
+        .flex_shrink_0();
+        div()
+            .flex()
+            .flex_row()
+            .w(px(280.0))
+            .flex_shrink_0()
+            .h_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(list)
+            .child(scrollbar)
             .into_any_element()
     }
 

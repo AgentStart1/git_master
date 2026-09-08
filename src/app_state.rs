@@ -38,6 +38,8 @@ pub struct GitMasterApp {
     pub repos: Vec<RepoInfo>,
     pub selected: Option<RepoSelection>,
     pub expanded_repos: BTreeSet<usize>,
+    pub repo_scroll: ScrollHandle,
+    pub repo_scroll_drag: Option<f32>,
     pub active_tab: DetailTab,
     pub detail: Option<RepoDetail>,
     pub submodule_detail: Option<SubmoduleDetail>,
@@ -75,6 +77,8 @@ impl GitMasterApp {
             repos: Vec::new(),
             selected: None,
             expanded_repos: BTreeSet::new(),
+            repo_scroll: ScrollHandle::new(),
+            repo_scroll_drag: None,
             active_tab: DetailTab::Info,
             detail: None,
             submodule_detail: None,
@@ -118,6 +122,8 @@ impl GitMasterApp {
         }
         self.parent_dir = Some(path);
         self.repos.clear();
+        self.repo_scroll.set_offset(point(px(0.0), px(0.0)));
+        self.repo_scroll_drag = None;
         self.selected = None;
         self.expanded_repos.clear();
         self.detail = None;
@@ -482,7 +488,9 @@ impl Render for GitMasterApp {
         let main_content = div()
             .flex()
             .flex_row()
-            .flex_grow()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
             .child(self.track("repo-list-panel", repo_list))
             .children(detail_panel.map(|p| self.track("detail-panel", p)));
         let main_content = self.track("main-content", main_content);

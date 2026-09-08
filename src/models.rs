@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -15,8 +16,16 @@ pub struct RepoInfo {
 pub struct RepoDetail {
     pub path: String,
     pub current_branch: String,
-    pub remote_url: Option<String>,
+    pub branches: Vec<String>,
+    pub remotes: Vec<RemoteInfo>,
+    pub head_labels: HashMap<String, Vec<String>>,
     pub file_status: FileStatusSummary,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteInfo {
+    pub name: String,
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -87,4 +96,6 @@ pub struct CommitGraph {
     pub repository_path: PathBuf,
     pub lanes: Vec<CommitLane>,
     pub submodule_links: Vec<SubmoduleCommitLink>,
+    /// Branch names keyed by the commit each branch head points to.
+    pub head_labels: HashMap<String, Vec<String>>,
 }

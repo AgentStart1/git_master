@@ -6,8 +6,8 @@ use chrono::TimeZone;
 use git2::{BranchType, Oid, Repository, Sort, StatusOptions};
 
 use crate::models::{
-    CommitGraph, CommitLane, CommitLaneStatus, FileStatusSummary, LogEntry, RepoDetail, RepoInfo,
-    SubmoduleCommitLink, SubmoduleInfo,
+    CommitGraph, CommitLane, CommitLaneStatus, FileStatusSummary, LogEntry, RemoteInfo, RepoDetail,
+    RepoInfo, SubmoduleCommitLink, SubmoduleInfo,
 };
 
 pub fn scan_repos(parent_dir: &Path) -> Vec<RepoInfo> {
@@ -113,6 +113,26 @@ pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, Strin
     run_git(repo_path, ["push", "-u", "origin", branch])
 }
 
+pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
+    run_git(repo_path, ["fetch", remote])
+}
+
+/// Fetch a remote and make the current local branch exactly match its
+/// corresponding remote-tracking branch. This intentionally discards local
+/// commits and working-tree changes, so callers must confirm with the user.
+pub fn reset_to_remote_branch(
+    repo_path: &Path,
+    remote: &str,
+    branch: &str,
+) -> Result<String, String> {
+    if branch == "HEAD detached" {
+        return Err("Cannot reset a detached HEAD to a remote branch".to_string());
+    }
+    fetch_remote(repo_path, remote)?;
+    let target = format!("{remote}/{branch}");
+    run_git(repo_path, ["reset", "--hard", &target])
+}
+
 pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, String> {
     run_git(
         repo_path,
@@ -129,13 +149,16 @@ pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, 
 pub fn get_repo_detail(repo_path: &Path) -> Option<RepoDetail> {
     let repo = Repository::open(repo_path).ok()?;
     let current_branch = get_branch_name(&repo);
-    let remote_url = first_remote_url(&repo);
+    let branches = list_local_branches(repo_path);
+    let remotes = list_remotes(&repo);
     let file_status = build_file_status(&repo);
 
     Some(RepoDetail {
         path: repo_path.display().to_string(),
         current_branch,
-        remote_url,
+        branches,
+        remotes,
+        head_labels: collect_branch_heads(&repo),
         file_status,
     })
 }
@@ -199,8 +222,16 @@ pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
 }
 
 pub fn get_commit_graph(repo_info: &RepoInfo, limit: usize) -> Option<CommitGraph> {
+    get_commit_graph_for_branches(repo_info, &[], limit)
+}
+
+pub fn get_commit_graph_for_branches(
+    repo_info: &RepoInfo,
+    branches: &[String],
+    limit: usize,
+) -> Option<CommitGraph> {
     let repo = Repository::open(&repo_info.path).ok()?;
-    let main_entries = read_commit_log(&repo, limit);
+    let main_entries = read_commit_log_for_branches(&repo, branches, limit);
     let mut lanes = Vec::with_capacity(repo_info.submodules.len() + 1);
     lanes.push(CommitLane {
         id: "main".to_string(),
@@ -261,7 +292,42 @@ pub fn get_commit_graph(repo_info: &RepoInfo, limit: usize) -> Option<CommitGrap
         repository_path: repo_info.path.clone(),
         lanes,
         submodule_links,
+        head_labels: collect_branch_heads(&repo),
     })
+}
+
+fn collect_branch_heads(repo: &Repository) -> std::collections::HashMap<String, Vec<String>> {
+    let mut labels = std::collections::HashMap::<String, Vec<String>>::new();
+    for branch in repo
+        .branches(None)
+        .into_iter()
+        .flatten()
+        .filter_map(|branch| branch.ok())
+    {
+        let (branch, _) = branch;
+        let Ok(Some(name)) = branch.name() else {
+            continue;
+        };
+        let Some(oid) = branch.get().target() else {
+            continue;
+        };
+        labels
+            .entry(oid.to_string())
+            .or_default()
+            .push(name.to_string());
+    }
+    for names in labels.values_mut() {
+        names.sort_by_key(|name| (name.contains('/'), name.to_lowercase()));
+    }
+    if let Ok(head) = repo.head()
+        && let Some(oid) = head.target()
+    {
+        labels
+            .entry(oid.to_string())
+            .or_default()
+            .insert(0, "HEAD".into());
+    }
+    labels
 }
 
 fn submodule_lane_id(relative_path: &Path) -> String {
@@ -269,13 +335,57 @@ fn submodule_lane_id(relative_path: &Path) -> String {
 }
 
 fn read_commit_log(repo: &Repository, limit: usize) -> Vec<LogEntry> {
+    read_commit_log_for_branches(repo, &[], limit)
+}
+
+fn read_commit_log_for_branches(
+    repo: &Repository,
+    branches: &[String],
+    limit: usize,
+) -> Vec<LogEntry> {
     let mut entries = Vec::new();
     let mut revwalk = match repo.revwalk() {
         Ok(r) => r,
         Err(_) => return entries,
     };
-    revwalk.push_head().ok();
-    revwalk.set_sorting(Sort::TIME).ok();
+    let branch_names = if branches.is_empty() {
+        default_history_branches(repo)
+    } else {
+        branches.to_vec()
+    };
+    for branch_name in &branch_names {
+        if let Ok(branch) = repo.find_branch(branch_name, BranchType::Local)
+            && let Some(oid) = branch.get().target()
+        {
+            revwalk.push(oid).ok();
+        }
+    }
+    // Include the matching remote-tracking branches for every selected local
+    // branch. This makes the canvas compare local and remote histories by
+    // default without requiring a separate remote branch picker.
+    for remote_branch in repo
+        .branches(Some(BranchType::Remote))
+        .into_iter()
+        .flatten()
+        .filter_map(|branch| branch.ok())
+    {
+        let Ok(Some(name)) = remote_branch.0.name() else {
+            continue;
+        };
+        let remote_leaf = name
+            .split_once('/')
+            .map(|(_, branch)| branch)
+            .unwrap_or(name);
+        if branch_names.iter().any(|branch| branch == remote_leaf)
+            && let Some(oid) = remote_branch.0.get().target()
+        {
+            revwalk.push(oid).ok();
+        }
+    }
+    if branches.is_empty() {
+        revwalk.push_head().ok();
+    }
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).ok();
 
     for oid in revwalk.flatten().take(limit) {
         let commit = match repo.find_commit(oid) {
@@ -312,6 +422,18 @@ fn read_commit_log(repo: &Repository, limit: usize) -> Vec<LogEntry> {
     entries
 }
 
+fn default_history_branches(repo: &Repository) -> Vec<String> {
+    let current = get_branch_name(repo);
+    let primary = ["main", "master"]
+        .into_iter()
+        .find(|branch| repo.find_branch(branch, BranchType::Local).is_ok())
+        .unwrap_or(&current);
+    let mut branches = vec![primary.to_string(), current];
+    branches.sort();
+    branches.dedup();
+    branches
+}
+
 /// Shared status configuration so the dirty flag and the per-category counts
 /// observe the same set of files: untracked files (recursing into untracked
 /// dirs) are included, ignored files are excluded, and rename detection is on
@@ -325,21 +447,25 @@ fn status_options() -> StatusOptions {
     opts
 }
 
-fn first_remote_url(repo: &Repository) -> Option<String> {
-    if let Ok(origin) = repo.find_remote("origin")
-        && let Ok(url) = origin.url()
-    {
-        return Some(url.to_string());
-    }
-    let names = repo.remotes().ok()?;
-    for name in names.iter().flatten().flatten() {
-        if let Ok(remote) = repo.find_remote(name)
-            && let Ok(url) = remote.url()
-        {
-            return Some(url.to_string());
-        }
-    }
-    None
+fn list_remotes(repo: &Repository) -> Vec<RemoteInfo> {
+    let Ok(names) = repo.remotes() else {
+        return Vec::new();
+    };
+    let mut remotes: Vec<RemoteInfo> = names
+        .iter()
+        .flatten()
+        .flatten()
+        .map(String::from)
+        .map(|name| RemoteInfo {
+            url: repo
+                .find_remote(&name)
+                .ok()
+                .and_then(|remote| remote.url().ok().map(String::from)),
+            name,
+        })
+        .collect();
+    remotes.sort_by_cached_key(|remote| remote.name.to_lowercase());
+    remotes
 }
 
 fn check_dirty(repo: &Repository) -> bool {

@@ -109,6 +109,7 @@ impl GitMasterApp {
                             .text_color(rgb(theme::TEXT_SUBTLE))
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
                                 if this
                                     .repos
                                     .get(i)
@@ -135,7 +136,7 @@ impl GitMasterApp {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .child(repo.current_branch.clone()),
+                                    .child(format!("Branch: {}", repo.current_branch)),
                             ),
                     )
                     .child(
@@ -302,6 +303,10 @@ impl GitMasterApp {
             .border_r_1()
             .border_color(rgb(theme::BG_OVERLAY))
             .overflow_y_scroll()
+            // GPUI treats a scroll container with a zero-width scrollbar like
+            // an overflow-hidden container. Reserve space so wheel scrolling
+            // and the scrollbar both remain available for long repo lists.
+            .scrollbar_width(px(10.0))
             .children(self.scanning.then(|| {
                 div()
                     .px(px(10.0))
@@ -345,6 +350,7 @@ impl GitMasterApp {
                         .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
                         .child(branch_name.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
                             this.close_context_menu();
                             this.do_checkout(repo_index, branch_name.clone(), cx);
                         }));
@@ -367,6 +373,7 @@ impl GitMasterApp {
                 "▸ Switch Branch"
             })
             .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
                 if let Some(menu) = this.context_menu.as_mut() {
                     menu.show_branches = !menu.show_branches;
                 }
@@ -381,6 +388,7 @@ impl GitMasterApp {
             .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
             .child("Pull --rebase")
             .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
                 this.close_context_menu();
                 this.do_pull_rebase(repo_index, cx);
             }));
@@ -393,12 +401,19 @@ impl GitMasterApp {
             .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
             .child("Push")
             .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
                 this.close_context_menu();
                 this.do_push(repo_index, window, cx);
             }));
 
         let menu_panel = div()
             .id("context-menu")
+            // Block hit testing through this floating menu to repository rows.
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, _, cx| cx.stop_propagation())
             .w(px(200.0))
             .bg(rgb(theme::BG_SURFACE))
             .border_1()

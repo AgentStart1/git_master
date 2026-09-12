@@ -149,7 +149,7 @@ pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, Strin
 }
 
 pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
-    run_git(repo_path, ["fetch", remote])
+    run_git(repo_path, ["fetch", "--", remote])
 }
 
 /// Fetch a remote and make the current local branch exactly match its

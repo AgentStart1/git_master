@@ -228,6 +228,7 @@ pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
     let mut nodes = Vec::new();
     let mut known_nodes = HashSet::new();
     let mut head_edges = Vec::new();
+    let mut next_head_top = FIRST_NODE_TOP;
 
     for lane in &graph.lanes {
         let x = lane_x.get(&lane.id).copied().unwrap_or(LANE_LEFT);
@@ -242,6 +243,8 @@ pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
                 .flatten()
                 .unwrap_or_default();
             if !head_labels.is_empty() {
+                let head_top = commit_y.max(next_head_top);
+                let head_height = head_node_height(head_labels.len());
                 let head_id = CanvasNodeId {
                     lane_id: "heads".to_string(),
                     commit_id: format!("head:{}", entry.full_hash),
@@ -252,15 +255,10 @@ pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
                     head_labels,
                     kind: CanvasNodeKind::Head,
                     width: NODE_WIDTH,
-                    height: head_node_height(
-                        graph
-                            .head_labels
-                            .get(&entry.full_hash)
-                            .map(Vec::len)
-                            .unwrap_or_default(),
-                    ),
-                    default_position: CanvasPoint::new(head_lane_x, commit_y),
+                    height: head_height,
+                    default_position: CanvasPoint::new(head_lane_x, head_top),
                 });
+                next_head_top = head_top + head_height + 8.0;
                 head_edges.push(CanvasEdge {
                     from: head_id,
                     to: id.clone(),
@@ -642,7 +640,7 @@ impl GitMasterApp {
 
             div()
                 .id(ElementId::Name(
-                    format!("commit-node-{}-{}", node.id.lane_id, node.short_hash()).into(),
+                    format!("commit-node-{}-{}", node.id.lane_id, node.id.commit_id).into(),
                 ))
                 .absolute()
                 .left(px(left))

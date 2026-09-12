@@ -558,7 +558,14 @@ impl GitMasterApp {
     }
 
     fn default_canvas_visible_branches(detail: &RepoDetail) -> std::collections::BTreeSet<String> {
-        let mut branches = std::collections::BTreeSet::from([detail.current_branch.clone()]);
+        let mut branches = std::collections::BTreeSet::new();
+        if detail
+            .branches
+            .iter()
+            .any(|branch| branch == &detail.current_branch)
+        {
+            branches.insert(detail.current_branch.clone());
+        }
         if let Some(primary) = ["main", "master"]
             .into_iter()
             .find(|branch| detail.branches.iter().any(|candidate| candidate == branch))
@@ -779,6 +786,7 @@ impl GitMasterApp {
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let refresh_path = root_path.clone();
             let detail_path = target_path.clone();
+            let expected_detail_path = detail_path.clone();
             let (result, refreshed, detail, log_entries, canvas_layout) = cx
                 .background_executor()
                 .spawn(async move {
@@ -809,13 +817,19 @@ impl GitMasterApp {
                         Err(error) => this.set_status(format!("Remote action failed: {error}")),
                     }
                     this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
-                    this.apply_detail(
-                        selection,
-                        detail,
-                        submodule_detail,
-                        log_entries,
-                        canvas_layout,
-                    );
+                    if this.selected_remote_action_target().is_some_and(
+                        |(_, _, path, current, _)| {
+                            path == expected_detail_path && current == selection
+                        },
+                    ) {
+                        this.apply_detail(
+                            selection,
+                            detail,
+                            submodule_detail,
+                            log_entries,
+                            canvas_layout,
+                        );
+                    }
                     this.busy = false;
                     cx.notify();
                 })

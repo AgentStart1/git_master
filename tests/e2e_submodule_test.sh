@@ -93,7 +93,7 @@ def find(n, nid):
 canvas = find(tree, 'commit-canvas')
 assert canvas, 'commit-canvas not found'
 lanes = [c for c in canvas.get('children', []) if c.get('node_type') == 'group']
-assert len(lanes) == 2, f'Expected main + submodule lanes, got: {lanes}'
+assert len(lanes) == 3, f'Expected main + submodule + HEAD lanes, got: {lanes}'
 assert any(c.get('text') == 'delta' for c in lanes), lanes
 assert any(c.get('text') in ('lib', 'modules/lib') for c in lanes), lanes
 
@@ -137,7 +137,7 @@ def find(n, nid):
 canvas = find(tree, 'commit-canvas')
 assert canvas, 'commit-canvas not found'
 lanes = [c for c in canvas.get('children', []) if c.get('node_type') == 'group']
-assert len(lanes) == 2, f'Expected main + submodule lanes, got: {lanes}'
+assert len(lanes) == 3, f'Expected main + submodule + HEAD lanes, got: {lanes}'
 assert any(c.get('text') == 'epsilon' for c in lanes), lanes
 
 nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
@@ -178,7 +178,7 @@ def find(n, nid):
 canvas = find(tree, 'commit-canvas')
 assert canvas, 'commit-canvas not found'
 lanes = [c.get('text') for c in canvas.get('children', []) if c.get('node_type') == 'group']
-assert lanes == ['lib'], f'Expected only selected lib lane, got: {lanes}'
+assert lanes == ['lib', 'Branch HEADs'], f'Expected selected lib + HEAD lanes, got: {lanes}'
 nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
 texts = [child.get('text', '') for node in nodes for child in node.get('children', [])]
 assert any('init lib' in text for text in texts), f'Submodule history missing: {texts}'

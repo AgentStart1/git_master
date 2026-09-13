@@ -381,7 +381,15 @@ fn branch_columns(entries: &[LogEntry]) -> Vec<usize> {
         result.push(column);
         active[column] = None;
         for (index, parent) in entry.parent_hashes.iter().enumerate() {
-            if active.iter().any(|id| id.as_ref() == Some(parent)) {
+            if let Some(existing_column) = active.iter().position(|id| id.as_ref() == Some(parent))
+            {
+                // Lower-numbered columns represent the earlier (primary) path.
+                // Let a primary path reclaim a shared ancestor from a side path,
+                // but never let the side path steal it back afterward.
+                if index == 0 && column < existing_column {
+                    active[existing_column] = None;
+                    active[column] = Some(parent.clone());
+                }
                 continue;
             }
             let slot = if index == 0 {
@@ -954,6 +962,22 @@ mod tests {
             entry("base0000", &[]),
         ]);
         assert_ne!(divergent[0], divergent[1]);
+    }
+
+    #[::core::prelude::v1::test]
+    fn first_parent_reclaims_its_column_when_merge_paths_converge() {
+        let entries = vec![
+            entry("merge000", &["left0000", "right000"]),
+            entry("right000", &["base0000"]),
+            entry("left0000", &["base0000"]),
+            entry("base0000", &[]),
+        ];
+
+        let columns = branch_columns(&entries);
+
+        assert_eq!(columns[0], columns[2]);
+        assert_ne!(columns[1], columns[2]);
+        assert_eq!(columns[2], columns[3]);
     }
 
     #[::core::prelude::v1::test]

@@ -149,7 +149,7 @@ pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, Strin
 }
 
 pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
-    run_git(repo_path, ["fetch", "--", remote])
+    run_git(repo_path, ["fetch", "--prune", "--", remote])
 }
 
 /// Fetch a remote and make the current local branch exactly match its
@@ -164,6 +164,21 @@ pub fn reset_to_remote_branch(
     fetch_remote(repo_path, remote)?;
     validate_reset_branch(repo_path, branch)?;
     let target = format!("refs/remotes/{remote}/{branch}");
+    let repo = Repository::open(repo_path).map_err(|error| error.to_string())?;
+    let target_oid = repo
+        .find_reference(&target)
+        .and_then(|reference| reference.peel_to_commit())
+        .map(|commit| commit.id())
+        .map_err(|error| {
+            let message = format!(
+                "Reset cancelled: remote branch {remote}/{branch} is unavailable after fetch ({error})."
+            );
+            let _ = crate::operation_log::append(&format!("repo={repo_path:?} {message}"));
+            message
+        })?;
+    let _ = crate::operation_log::append(&format!(
+        "repo={repo_path:?} reset target={target} oid={target_oid}"
+    ));
     run_git(repo_path, ["reset", "--hard", &target, "--"])
 }
 

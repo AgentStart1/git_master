@@ -1,6 +1,7 @@
 mod app_state;
 mod git_ops;
 mod models;
+mod operation_log;
 #[cfg(feature = "test-rpc")]
 mod test_rpc;
 mod ui;
@@ -9,6 +10,9 @@ use app_state::GitMasterApp;
 use gpui::*;
 
 fn main() {
+    if let Err(error) = operation_log::append("Application started") {
+        eprintln!("Cannot initialize operation log: {error}");
+    }
     Application::new().run(|cx: &mut App| {
         #[cfg(feature = "test-rpc")]
         let (tree_provider, command_queue) = {

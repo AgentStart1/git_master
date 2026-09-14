@@ -5,6 +5,36 @@ use crate::git_ops;
 use crate::models::SubmoduleDetail;
 use crate::ui::{commit_canvas, theme};
 
+fn repo_scrollbar_geometry(height: f32, max_offset: f32, offset: f32) -> (f32, f32) {
+    let height = height.max(0.0);
+    let thumb = if max_offset <= 0.0 {
+        height
+    } else {
+        (height * height / (height + max_offset))
+            .max(24.0)
+            .min(height)
+    };
+    let top = if max_offset > 0.0 {
+        (-offset / max_offset).clamp(0.0, 1.0) * (height - thumb)
+    } else {
+        0.0
+    };
+    (thumb, top)
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::repo_scrollbar_geometry;
+
+    #[test]
+    fn thumb_reaches_both_ends_and_handles_short_viewports() {
+        assert_eq!(repo_scrollbar_geometry(100.0, 300.0, 0.0), (25.0, 0.0));
+        assert_eq!(repo_scrollbar_geometry(100.0, 300.0, -300.0), (25.0, 75.0));
+        assert_eq!(repo_scrollbar_geometry(10.0, 300.0, -300.0), (10.0, 0.0));
+        assert_eq!(repo_scrollbar_geometry(100.0, 0.0, 0.0), (100.0, 0.0));
+    }
+}
+
 impl GitMasterApp {
     pub fn render_repo_list(&self, _window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
         let repo_items: Vec<AnyElement> = self
@@ -36,6 +66,7 @@ impl GitMasterApp {
 
                 let item = div()
                     .id(ElementId::Name(format!("repo-{i}").into()))
+                    .flex_shrink_0()
                     .flex()
                     .flex_row()
                     .items_center()
@@ -109,6 +140,7 @@ impl GitMasterApp {
                             .text_color(rgb(theme::TEXT_SUBTLE))
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _event, _window, cx| {
+                                cx.stop_propagation();
                                 if this
                                     .repos
                                     .get(i)
@@ -135,7 +167,7 @@ impl GitMasterApp {
                                 div()
                                     .text_xs()
                                     .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .child(repo.current_branch.clone()),
+                                    .child(format!("Branch: {}", repo.current_branch)),
                             ),
                     )
                     .child(
@@ -197,6 +229,7 @@ impl GitMasterApp {
 
                         let item = div()
                             .id(ElementId::Name(id.clone().into()))
+                            .flex_shrink_0()
                             .flex()
                             .flex_row()
                             .items_center()
@@ -291,26 +324,120 @@ impl GitMasterApp {
             })
             .collect();
 
-        div()
+        let list = div()
             .id("repo-list")
             .flex()
             .flex_col()
-            .w(px(280.0))
-            .min_w(px(280.0))
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
             .h_full()
             .bg(rgb(theme::BG_BASE))
             .border_r_1()
             .border_color(rgb(theme::BG_OVERLAY))
             .overflow_y_scroll()
+            .track_scroll(&self.repo_scroll)
             .children(self.scanning.then(|| {
                 div()
+                    .flex_shrink_0()
                     .px(px(10.0))
                     .py(px(8.0))
                     .text_xs()
                     .text_color(rgb(theme::TEXT_SUBTLE))
                     .child("Scanning…")
             }))
-            .children(repo_items)
+            .children(repo_items);
+
+        let handle = self.repo_scroll.clone();
+        let entity = cx.entity();
+        let scrollbar = canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _cx| {
+                let height: f32 = bounds.size.height.into();
+                let max: f32 = handle.max_offset().height.into();
+                let offset: f32 = handle.offset().y.into();
+                let (thumb_height, thumb_top) = repo_scrollbar_geometry(height, max, offset);
+                window.paint_quad(fill(bounds, rgb(theme::BG_SURFACE)));
+                let thumb = Bounds::new(
+                    point(bounds.origin.x + px(2.0), bounds.origin.y + px(thumb_top)),
+                    size(px(8.0), px(thumb_height)),
+                );
+                window.paint_quad(fill(thumb, rgb(theme::TEXT_SUBTLE)));
+                window.on_mouse_event({
+                    let entity = entity.clone();
+                    let handle = handle.clone();
+                    move |event: &MouseDownEvent, phase, _, cx| {
+                        if !phase.bubble()
+                            || event.button != MouseButton::Left
+                            || !bounds.contains(&event.position)
+                        {
+                            return;
+                        }
+                        let y: f32 = (event.position.y - bounds.origin.y).into();
+                        let grab = if y >= thumb_top && y <= thumb_top + thumb_height {
+                            y - thumb_top
+                        } else {
+                            thumb_height / 2.0
+                        };
+                        entity.update(cx, |this, cx| {
+                            this.repo_scroll_drag = Some(grab);
+                            cx.notify();
+                        });
+                        let fraction =
+                            ((y - grab) / (height - thumb_height).max(1.0)).clamp(0.0, 1.0);
+                        handle.set_offset(point(px(0.0), px(-max * fraction)));
+                        cx.stop_propagation();
+                    }
+                });
+                window.on_mouse_event({
+                    let entity = entity.clone();
+                    let handle = handle.clone();
+                    move |event: &MouseMoveEvent, phase, _, cx| {
+                        if !phase.bubble() {
+                            return;
+                        }
+                        let Some(grab) = entity.read(cx).repo_scroll_drag else {
+                            return;
+                        };
+                        if !event.dragging() {
+                            return;
+                        }
+                        let y: f32 = (event.position.y - bounds.origin.y).into();
+                        let fraction =
+                            ((y - grab) / (height - thumb_height).max(1.0)).clamp(0.0, 1.0);
+                        handle.set_offset(point(px(0.0), px(-max * fraction)));
+                        entity.update(cx, |_, cx| cx.notify());
+                        cx.stop_propagation();
+                    }
+                });
+                window.on_mouse_event({
+                    let entity = entity.clone();
+                    move |event: &MouseUpEvent, _, _, cx| {
+                        if event.button == MouseButton::Left
+                            && entity.read(cx).repo_scroll_drag.is_some()
+                        {
+                            entity.update(cx, |this, cx| {
+                                this.repo_scroll_drag = None;
+                                cx.notify();
+                            });
+                        }
+                    }
+                });
+            },
+        )
+        .w(px(12.0))
+        .h_full()
+        .flex_shrink_0();
+        div()
+            .flex()
+            .flex_row()
+            .w(px(280.0))
+            .flex_shrink_0()
+            .h_full()
+            .min_h(px(0.0))
+            .overflow_hidden()
+            .child(list)
+            .child(scrollbar)
             .into_any_element()
     }
 
@@ -345,6 +472,7 @@ impl GitMasterApp {
                         .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
                         .child(branch_name.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
                             this.close_context_menu();
                             this.do_checkout(repo_index, branch_name.clone(), cx);
                         }));
@@ -367,6 +495,7 @@ impl GitMasterApp {
                 "▸ Switch Branch"
             })
             .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
                 if let Some(menu) = this.context_menu.as_mut() {
                     menu.show_branches = !menu.show_branches;
                 }
@@ -381,6 +510,7 @@ impl GitMasterApp {
             .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
             .child("Pull --rebase")
             .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
                 this.close_context_menu();
                 this.do_pull_rebase(repo_index, cx);
             }));
@@ -393,12 +523,19 @@ impl GitMasterApp {
             .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
             .child("Push")
             .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
                 this.close_context_menu();
                 this.do_push(repo_index, window, cx);
             }));
 
         let menu_panel = div()
             .id("context-menu")
+            // Block hit testing through this floating menu to repository rows.
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(|_, _, cx| cx.stop_propagation())
             .w(px(200.0))
             .bg(rgb(theme::BG_SURFACE))
             .border_1()
@@ -452,6 +589,7 @@ impl GitMasterApp {
                         Err(e) => this.set_status(format!("Checkout failed: {e}")),
                     }
                     this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
+                    this.refresh_pushed_repo_details(repo_index, &refresh_path, cx);
                     this.busy = false;
                     cx.notify();
                 })
@@ -600,7 +738,52 @@ impl GitMasterApp {
                         Err(e) => this.set_status(format!("Push failed: {e}")),
                     }
                     this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
+                    this.refresh_pushed_repo_details(repo_index, &refresh_path, cx);
                     this.busy = false;
+                    cx.notify();
+                })
+                .ok();
+        }));
+    }
+
+    fn refresh_pushed_repo_details(
+        &mut self,
+        repo_index: usize,
+        expected_path: &std::path::Path,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.selected != Some(RepoSelection::Repo(repo_index))
+            || self.repos.get(repo_index).map(|repo| repo.path.as_path()) != Some(expected_path)
+        {
+            return;
+        }
+        let path = expected_path.to_path_buf();
+        self.loading_detail = true;
+        let branches = self
+            .canvas_visible_branches
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.detail_task = Some(cx.spawn(async move |entity, cx| {
+            let expected = path.clone();
+            let (detail, log, layout) = cx
+                .background_executor()
+                .spawn(async move {
+                    (
+                        git_ops::get_repo_detail(&path),
+                        git_ops::get_commit_log(&path, 200),
+                        commit_canvas::load_layout_for_branches(&path, &branches, 200),
+                    )
+                })
+                .await;
+            entity
+                .update(cx, |this, cx| {
+                    if this.repos.get(repo_index).map(|repo| repo.path.as_path())
+                        != Some(expected.as_path())
+                    {
+                        return;
+                    }
+                    this.apply_detail(RepoSelection::Repo(repo_index), detail, None, log, layout);
                     cx.notify();
                 })
                 .ok();

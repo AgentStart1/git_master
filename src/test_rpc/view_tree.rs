@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::app_state::{ContextMenu, DetailTab, GitMasterApp, RepoSelection};
 use crate::models::{LogEntry, RepoDetail, RepoInfo, SubmoduleDetail};
-use crate::ui::commit_canvas::{CanvasEdgeKind, CommitCanvasLayout, LogViewMode};
+use crate::ui::commit_canvas::{CanvasEdgeKind, CanvasNodeKind, CommitCanvasLayout, LogViewMode};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Rect {
@@ -213,7 +213,10 @@ impl TestViewTreeSnapshot {
                     .with_interactive()
                     .with_bounds_from(reg, &id)
                     .with_child(ViewNode::new("text").with_text(&repo.name))
-                    .with_child(ViewNode::new("text").with_text(&repo.current_branch))
+                    .with_child(
+                        ViewNode::new("text")
+                            .with_text(&format!("Branch: {}", repo.current_branch)),
+                    )
                     .with_child(ViewNode::new("text").with_text(dirty_text));
 
                 if let Some(ab) = ab {
@@ -322,8 +325,23 @@ impl TestViewTreeSnapshot {
                 ViewNode::new("label").with_text(&format!("Branch: {}", detail.current_branch)),
             )
             .with_child(ViewNode::new("label").with_text(&format!(
-                "Remote: {}",
-                detail.remote_url.as_deref().unwrap_or("(none)")
+                "Remotes: {}",
+                if detail.remotes.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    detail
+                        .remotes
+                        .iter()
+                        .map(|remote| {
+                            format!(
+                                "{} ({})",
+                                remote.name,
+                                remote.url.as_deref().unwrap_or("no URL")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
             )))
             .with_child(ViewNode::new("label").with_text(&format!("File Status: {status_text}")))
     }
@@ -384,6 +402,15 @@ impl TestViewTreeSnapshot {
                 ViewNode::new("list-item")
                     .with_child(ViewNode::new("text").with_text(&entry.hash))
                     .with_child(ViewNode::new("text").with_text(&entry.message))
+                    .with_children(
+                        self.detail
+                            .as_ref()
+                            .and_then(|detail| detail.head_labels.get(&entry.full_hash))
+                            .into_iter()
+                            .flatten()
+                            .map(|label| ViewNode::new("label").with_text(label))
+                            .collect(),
+                    )
                     .with_child(
                         ViewNode::new("text")
                             .with_text(&format!("{} — {}", entry.author, entry.date)),
@@ -411,16 +438,29 @@ impl TestViewTreeSnapshot {
             let mut view = ViewNode::new("commit-node")
                 .with_id(&format!(
                     "commit-node-{}-{}",
-                    node.id.lane_id,
-                    node.short_hash()
+                    node.id.lane_id, node.id.commit_id
                 ))
                 .with_interactive()
                 .with_child(ViewNode::new("text").with_text(node.short_hash()));
-            if let Some(entry) = node.entry.as_ref() {
-                view = view.with_child(ViewNode::new("text").with_text(&entry.message));
-            } else {
-                view = view
-                    .with_child(ViewNode::new("text").with_text("Referenced commit not loaded"));
+            match node.kind {
+                CanvasNodeKind::Commit => {
+                    if let Some(entry) = node.entry.as_ref() {
+                        view = view.with_child(ViewNode::new("text").with_text(&entry.message));
+                    }
+                }
+                CanvasNodeKind::Placeholder => {
+                    view = view.with_child(
+                        ViewNode::new("text").with_text("Referenced commit not loaded"),
+                    );
+                }
+                CanvasNodeKind::Head => {
+                    view = view.with_children(
+                        node.head_labels
+                            .iter()
+                            .map(|label| ViewNode::new("label").with_text(label))
+                            .collect(),
+                    );
+                }
             }
             view
         });
@@ -434,6 +474,7 @@ impl TestViewTreeSnapshot {
                 match edge.kind {
                     CanvasEdgeKind::Parent => "parent",
                     CanvasEdgeKind::Submodule => "submodule",
+                    CanvasEdgeKind::Head => "head",
                 }
             ))
         });

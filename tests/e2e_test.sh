@@ -80,7 +80,7 @@ print('  beta is dirty: OK')
 gamma_idx = names.index('gamma')
 gamma_item = items[gamma_idx]
 gamma_texts = [c.get('text','') for c in gamma_item.get('children',[])]
-assert 'dev' in gamma_texts, f'gamma should be on dev branch, texts: {gamma_texts}'
+assert 'Branch: dev' in gamma_texts, f'gamma should be on dev branch, texts: {gamma_texts}'
 print('  gamma branch=dev: OK')
 " || fail "Test 1"
 pass "Repo list shows all repos with correct status"

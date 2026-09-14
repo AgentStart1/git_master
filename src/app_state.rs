@@ -38,11 +38,14 @@ pub struct GitMasterApp {
     pub repos: Vec<RepoInfo>,
     pub selected: Option<RepoSelection>,
     pub expanded_repos: BTreeSet<usize>,
+    pub repo_scroll: ScrollHandle,
+    pub repo_scroll_drag: Option<f32>,
     pub active_tab: DetailTab,
     pub detail: Option<RepoDetail>,
     pub submodule_detail: Option<SubmoduleDetail>,
     pub log_entries: Vec<LogEntry>,
     pub log_view_mode: LogViewMode,
+    pub canvas_visible_branches: BTreeSet<String>,
     pub commit_canvas_layout: Option<CommitCanvasLayout>,
     pub commit_canvas_states: HashMap<PathBuf, CommitCanvasState>,
     pub commit_canvas_interaction: Option<CanvasInteraction>,
@@ -55,6 +58,7 @@ pub struct GitMasterApp {
     pub detail_task: Option<Task<()>>,
     pub context_menu_task: Option<Task<()>>,
     pub push_preflight_task: Option<Task<()>>,
+    pub remote_action_prompt_task: Option<Task<()>>,
     pub operation_task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
     pub test_view_tree_task: Option<Task<()>>,
@@ -73,11 +77,14 @@ impl GitMasterApp {
             repos: Vec::new(),
             selected: None,
             expanded_repos: BTreeSet::new(),
+            repo_scroll: ScrollHandle::new(),
+            repo_scroll_drag: None,
             active_tab: DetailTab::Info,
             detail: None,
             submodule_detail: None,
             log_entries: Vec::new(),
             log_view_mode: LogViewMode::List,
+            canvas_visible_branches: BTreeSet::new(),
             commit_canvas_layout: None,
             commit_canvas_states: HashMap::new(),
             commit_canvas_interaction: None,
@@ -90,6 +97,7 @@ impl GitMasterApp {
             detail_task: None,
             context_menu_task: None,
             push_preflight_task: None,
+            remote_action_prompt_task: None,
             operation_task: None,
             #[cfg(feature = "test-rpc")]
             test_view_tree_task: None,
@@ -114,11 +122,14 @@ impl GitMasterApp {
         }
         self.parent_dir = Some(path);
         self.repos.clear();
+        self.repo_scroll.set_offset(point(px(0.0), px(0.0)));
+        self.repo_scroll_drag = None;
         self.selected = None;
         self.expanded_repos.clear();
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
+        self.canvas_visible_branches.clear();
         self.commit_canvas_layout = None;
         self.commit_canvas_interaction = None;
         self.scanning = true;
@@ -147,6 +158,7 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
+        self.canvas_visible_branches.clear();
         self.commit_canvas_layout = None;
         self.commit_canvas_interaction = None;
         self.loading_detail = true;
@@ -168,6 +180,7 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
+        self.canvas_visible_branches.clear();
         self.commit_canvas_layout = None;
         self.commit_canvas_interaction = None;
         self.loading_detail = true;
@@ -475,7 +488,9 @@ impl Render for GitMasterApp {
         let main_content = div()
             .flex()
             .flex_row()
-            .flex_grow()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden()
             .child(self.track("repo-list-panel", repo_list))
             .children(detail_panel.map(|p| self.track("detail-panel", p)));
         let main_content = self.track("main-content", main_content);

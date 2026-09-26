@@ -36,10 +36,16 @@ pub fn remote_statuses(repo: &Repository) -> Vec<RemoteStatus> {
                 .and_then(|name| name.strip_prefix("refs/heads/"))
                 .unwrap_or(branch);
             let counts = local.and_then(|local| {
-                let remote = repo
-                    .refname_to_id(&format!("refs/remotes/{name}/{remote_branch}"))
-                    .ok()?;
-                repo.graph_ahead_behind(local, remote).ok()
+                let remote = repo.find_remote(name).ok()?;
+                let source = format!("refs/heads/{remote_branch}");
+                let remote_oid = remote.refspecs().find_map(|spec| {
+                    if spec.direction() != git2::Direction::Fetch || !spec.src_matches(&source) {
+                        return None;
+                    }
+                    let destination = spec.transform(&source).ok()?;
+                    repo.refname_to_id(destination.as_str().ok()?).ok()
+                })?;
+                repo.graph_ahead_behind(local, remote_oid).ok()
             });
             RemoteStatus {
                 name: name.to_owned(),
@@ -108,5 +114,88 @@ pub fn switch_to_main(path: &Path) -> Result<String, String> {
         )
     } else {
         Err(format!("Local main branch {branch} is unavailable"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_counts_follow_fetch_refspecs_and_configured_upstream_names() {
+        let path = std::env::temp_dir().join(format!(
+            "git-master-refspec-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo = Repository::init(&path).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        let tree = repo
+            .find_tree(repo.treebuilder(None).unwrap().write().unwrap())
+            .unwrap();
+        let base = repo
+            .commit(None, &signature, &signature, "base", &tree, &[])
+            .unwrap();
+        let parent = repo.find_commit(base).unwrap();
+        let local = repo
+            .commit(
+                Some("refs/heads/feature"),
+                &signature,
+                &signature,
+                "local",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+        let divergent = repo
+            .commit(None, &signature, &signature, "remote", &tree, &[&parent])
+            .unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        for remote in ["origin", "mirror", "unmapped"] {
+            repo.remote(remote, path.to_str().unwrap()).unwrap();
+        }
+        let mut config = repo.config().unwrap();
+        config
+            .set_str(
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/company/*",
+            )
+            .unwrap();
+        config.set_str("branch.feature.remote", "origin").unwrap();
+        config
+            .set_str("branch.feature.merge", "refs/heads/main")
+            .unwrap();
+        config
+            .set_str(
+                "remote.unmapped.fetch",
+                "+refs/heads/main:refs/remotes/unmapped/main",
+            )
+            .unwrap();
+        repo.reference("refs/remotes/company/main", base, true, "test")
+            .unwrap();
+        repo.reference("refs/remotes/mirror/feature", divergent, true, "test")
+            .unwrap();
+        // A stale default-named ref must not override the configured mapping.
+        repo.reference("refs/remotes/origin/main", divergent, true, "test")
+            .unwrap();
+        repo.reference("refs/remotes/unmapped/feature", local, true, "test")
+            .unwrap();
+        let statuses = remote_statuses(&repo);
+        let counts = |name| {
+            statuses
+                .iter()
+                .find(|status| status.name == name)
+                .unwrap()
+                .counts
+        };
+        assert_eq!(counts("origin"), Some((1, 0)));
+        assert_eq!(counts("mirror"), Some((1, 1)));
+        assert_eq!(counts("unmapped"), None);
+        drop((config, parent, tree));
+        drop(repo);
+        std::fs::remove_dir_all(path).unwrap();
     }
 }

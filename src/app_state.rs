@@ -29,11 +29,13 @@ pub enum RepoSelection {
 pub struct ContextMenu {
     pub repo_index: usize,
     pub position: Point<Pixels>,
-    pub branches: Vec<String>,
-    pub show_branches: bool,
 }
 
 pub struct GitMasterApp {
+    pub selected_commit: Option<(PathBuf, String)>,
+    pub commit_text: Option<Result<String, String>>,
+    pub commit_task: Option<Task<()>>,
+    pub commit_press: Option<crate::ui::commit_details::CommitPress>,
     pub parent_dir: Option<PathBuf>,
     pub repos: Vec<RepoInfo>,
     pub selected: Option<RepoSelection>,
@@ -45,7 +47,7 @@ pub struct GitMasterApp {
     pub submodule_detail: Option<SubmoduleDetail>,
     pub log_entries: Vec<LogEntry>,
     pub log_view_mode: LogViewMode,
-    pub canvas_visible_branches: BTreeSet<String>,
+    pub log_visible_branches: BTreeSet<String>,
     pub commit_canvas_layout: Option<CommitCanvasLayout>,
     pub commit_canvas_states: HashMap<PathBuf, CommitCanvasState>,
     pub commit_canvas_interaction: Option<CanvasInteraction>,
@@ -56,7 +58,6 @@ pub struct GitMasterApp {
     pub busy: bool,
     pub scan_task: Option<Task<()>>,
     pub detail_task: Option<Task<()>>,
-    pub context_menu_task: Option<Task<()>>,
     pub push_preflight_task: Option<Task<()>>,
     pub remote_action_prompt_task: Option<Task<()>>,
     pub operation_task: Option<Task<()>>,
@@ -73,6 +74,10 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            selected_commit: None,
+            commit_text: None,
+            commit_task: None,
+            commit_press: None,
             parent_dir: None,
             repos: Vec::new(),
             selected: None,
@@ -84,7 +89,7 @@ impl GitMasterApp {
             submodule_detail: None,
             log_entries: Vec::new(),
             log_view_mode: LogViewMode::List,
-            canvas_visible_branches: BTreeSet::new(),
+            log_visible_branches: BTreeSet::new(),
             commit_canvas_layout: None,
             commit_canvas_states: HashMap::new(),
             commit_canvas_interaction: None,
@@ -95,7 +100,6 @@ impl GitMasterApp {
             busy: false,
             scan_task: None,
             detail_task: None,
-            context_menu_task: None,
             push_preflight_task: None,
             remote_action_prompt_task: None,
             operation_task: None,
@@ -114,6 +118,7 @@ impl GitMasterApp {
     /// The actual `scan_repos` work happens off-thread; results land via
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
+        self.close_commit_details();
         let was_checking_upstream = self.status_message.as_deref() == Some("Checking upstream…");
         self.push_preflight_task = None;
         if was_checking_upstream {
@@ -129,13 +134,12 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
-        self.canvas_visible_branches.clear();
+        self.log_visible_branches.clear();
         self.commit_canvas_layout = None;
         self.commit_canvas_interaction = None;
         self.scanning = true;
         self.loading_detail = false;
         self.detail_task = None;
-        self.context_menu_task = None;
         self.context_menu = None;
     }
 
@@ -152,13 +156,14 @@ impl GitMasterApp {
     /// Mark a repo as selected and enter the loading state. The detail and
     /// commit-log work happens off-thread; results land via [`apply_detail`].
     pub fn begin_select(&mut self, index: usize) {
+        self.close_commit_details();
         self.detail_task = None;
         self.selected = Some(RepoSelection::Repo(index));
         self.active_tab = DetailTab::Info;
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
-        self.canvas_visible_branches.clear();
+        self.log_visible_branches.clear();
         self.commit_canvas_layout = None;
         self.commit_canvas_interaction = None;
         self.loading_detail = true;
@@ -170,6 +175,7 @@ impl GitMasterApp {
         submodule_index: usize,
         relative_path: PathBuf,
     ) {
+        self.close_commit_details();
         self.detail_task = None;
         self.selected = Some(RepoSelection::Submodule {
             repo_index,
@@ -180,7 +186,7 @@ impl GitMasterApp {
         self.detail = None;
         self.submodule_detail = None;
         self.log_entries.clear();
-        self.canvas_visible_branches.clear();
+        self.log_visible_branches.clear();
         self.commit_canvas_layout = None;
         self.commit_canvas_interaction = None;
         self.loading_detail = true;
@@ -201,7 +207,10 @@ impl GitMasterApp {
         }
         self.detail = detail;
         self.submodule_detail = submodule_detail;
-        self.log_entries = log_entries;
+        self.log_entries = commit_canvas_layout
+            .as_ref()
+            .map(|layout| layout.list.entries.clone())
+            .unwrap_or(log_entries);
         if let Some(layout) = commit_canvas_layout.as_ref() {
             self.commit_canvas_states
                 .entry(layout.repository_path.clone())
@@ -228,17 +237,10 @@ impl GitMasterApp {
         }
     }
 
-    pub fn open_context_menu(
-        &mut self,
-        repo_index: usize,
-        position: Point<Pixels>,
-        branches: Vec<String>,
-    ) {
+    pub fn open_context_menu(&mut self, repo_index: usize, position: Point<Pixels>) {
         self.context_menu = Some(ContextMenu {
             repo_index,
             position,
-            branches,
-            show_branches: false,
         });
     }
 
@@ -519,23 +521,21 @@ mod tests {
             name: name.to_string(),
             path: PathBuf::from(path),
             is_dirty: false,
-            ahead: 0,
-            behind: 0,
             current_branch: "main".to_string(),
             submodules,
+            remote_statuses: Vec::new(),
         }
     }
 
     fn submodule(name: &str, path: &str, relative_path: &str) -> SubmoduleInfo {
         SubmoduleInfo {
+            remote_statuses: Vec::new(),
             name: name.to_string(),
             path: PathBuf::from(path),
             relative_path: PathBuf::from(relative_path),
             url: None,
             is_initialized: true,
             is_dirty: false,
-            ahead: 0,
-            behind: 0,
             current_branch: "main".to_string(),
         }
     }

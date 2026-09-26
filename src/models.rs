@@ -6,10 +6,26 @@ pub struct RepoInfo {
     pub name: String,
     pub path: PathBuf,
     pub is_dirty: bool,
-    pub ahead: usize,
-    pub behind: usize,
     pub current_branch: String,
     pub submodules: Vec<SubmoduleInfo>,
+    pub remote_statuses: Vec<RemoteStatus>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteStatus {
+    pub name: String,
+    pub counts: Option<(usize, usize)>,
+}
+
+impl RemoteStatus {
+    pub fn label(&self) -> String {
+        match self.counts {
+            Some((ahead, behind)) => {
+                format!("{} ↑{} ↓{}", self.name, ahead, behind)
+            }
+            None => format!("{} ↑— ↓—", self.name),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -30,14 +46,13 @@ pub struct RemoteInfo {
 
 #[derive(Clone, Debug)]
 pub struct SubmoduleInfo {
+    pub remote_statuses: Vec<RemoteStatus>,
     pub name: String,
     pub path: PathBuf,
     pub relative_path: PathBuf,
     pub url: Option<String>,
     pub is_initialized: bool,
     pub is_dirty: bool,
-    pub ahead: usize,
-    pub behind: usize,
     pub current_branch: String,
 }
 

@@ -37,249 +37,63 @@ mod scroll_tests {
 
 impl GitMasterApp {
     pub fn render_repo_list(&self, _window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
-        let repo_items: Vec<AnyElement> = self
-            .repos
-            .iter()
-            .enumerate()
-            .flat_map(|(i, repo)| {
-                let is_selected = self.selected == Some(RepoSelection::Repo(i));
-                let is_expanded = self.expanded_repos.contains(&i);
-                let has_submodules = !repo.submodules.is_empty();
-                let bg = if is_selected {
-                    rgb(theme::BG_OVERLAY)
-                } else {
-                    rgb(theme::BG_BASE)
-                };
+        let repo_items: Vec<AnyElement> =
+            self.repos
+                .iter()
+                .enumerate()
+                .flat_map(|(i, repo)| {
+                    let is_selected = self.selected == Some(RepoSelection::Repo(i));
+                    let is_expanded = self.expanded_repos.contains(&i);
+                    let has_submodules = !repo.submodules.is_empty();
+                    let bg = if is_selected {
+                        rgb(theme::BG_OVERLAY)
+                    } else {
+                        rgb(theme::BG_BASE)
+                    };
 
-                let dirty_color = if repo.is_dirty {
-                    rgb(theme::RED)
-                } else {
-                    rgb(theme::GREEN)
-                };
-                let dirty_icon = if repo.is_dirty { "●" } else { "✓" };
+                    let dirty_color = if repo.is_dirty {
+                        rgb(theme::RED)
+                    } else {
+                        rgb(theme::GREEN)
+                    };
+                    let dirty_icon = if repo.is_dirty { "●" } else { "✓" };
 
-                let ahead_behind: Option<String> = if repo.ahead > 0 || repo.behind > 0 {
-                    Some(format!("↑{} ↓{}", repo.ahead, repo.behind))
-                } else {
-                    None
-                };
-
-                let item = div()
-                    .id(ElementId::Name(format!("repo-{i}").into()))
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .bg(bg)
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                        let Some(repo) = this.repos.get(i).cloned() else {
-                            return;
-                        };
-                        let path = repo.path.clone();
-                        this.begin_select(i);
-                        cx.notify();
-                        this.detail_task = Some(cx.spawn(async move |entity, cx| {
-                            let (detail, log_entries, canvas_layout) = cx
-                                .background_executor()
-                                .spawn(async move {
-                                    (
-                                        git_ops::get_repo_detail(&path),
-                                        git_ops::get_commit_log(&path, 200),
-                                        commit_canvas::load_layout(&repo, 200),
-                                    )
-                                })
-                                .await;
-                            entity
-                                .update(cx, |this, cx| {
-                                    this.apply_detail(
-                                        RepoSelection::Repo(i),
-                                        detail,
-                                        None,
-                                        log_entries,
-                                        canvas_layout,
-                                    );
-                                    cx.notify();
-                                })
-                                .ok();
-                        }));
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
-                            if this.busy {
-                                return;
-                            }
-                            let Some(repo) = this.repos.get(i) else {
-                                return;
-                            };
-                            let path = repo.path.clone();
-                            let position = event.position;
-                            this.context_menu_task = Some(cx.spawn(async move |entity, cx| {
-                                let branches = cx
-                                    .background_executor()
-                                    .spawn(async move { git_ops::list_local_branches(&path) })
-                                    .await;
-                                entity
-                                    .update(cx, |this, cx| {
-                                        this.open_context_menu(i, position, branches);
-                                        cx.notify();
-                                    })
-                                    .ok();
-                            }));
-                        }),
-                    )
-                    .child(
+                    let item =
                         div()
-                            .id(ElementId::Name(format!("repo-{i}-toggle").into()))
-                            .w(px(14.0))
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_SUBTLE))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _event, _window, cx| {
-                                cx.stop_propagation();
-                                if this
-                                    .repos
-                                    .get(i)
-                                    .is_some_and(|repo| !repo.submodules.is_empty())
-                                {
-                                    this.toggle_repo_expanded(i);
-                                    cx.notify();
-                                }
-                            }))
-                            .child(if has_submodules {
-                                if is_expanded { "▾" } else { "▸" }
-                            } else {
-                                ""
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_grow()
-                            .overflow_x_hidden()
-                            .child(div().text_sm().child(repo.name.clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .child(format!("Branch: {}", repo.current_branch)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(div().text_xs().text_color(dirty_color).child(dirty_icon))
-                            .children(ahead_behind.map(|ab| {
-                                div().text_xs().text_color(rgb(theme::YELLOW)).child(ab)
-                            })),
-                    );
-
-                let mut items = vec![self.track(&format!("repo-{i}"), item)];
-                if is_expanded {
-                    items.extend(repo.submodules.iter().enumerate().map(|(j, submodule)| {
-                        let id = format!("repo-{i}-submodule-{j}");
-                        let is_selected = self.selected
-                            == Some(RepoSelection::Submodule {
-                                repo_index: i,
-                                submodule_index: j,
-                                relative_path: submodule.relative_path.clone(),
-                            });
-                        let bg = if is_selected {
-                            rgb(theme::BG_OVERLAY)
-                        } else {
-                            rgb(theme::BG_BASE)
-                        };
-                        let dirty_color = if submodule.is_dirty {
-                            rgb(theme::RED)
-                        } else if submodule.is_initialized {
-                            rgb(theme::GREEN)
-                        } else {
-                            rgb(theme::YELLOW)
-                        };
-                        let dirty_icon = if submodule.is_dirty {
-                            "●"
-                        } else if submodule.is_initialized {
-                            "✓"
-                        } else {
-                            "!"
-                        };
-                        let ahead_behind: Option<String> =
-                            if submodule.ahead > 0 || submodule.behind > 0 {
-                                Some(format!("↑{} ↓{}", submodule.ahead, submodule.behind))
-                            } else {
-                                None
-                            };
-                        let path = submodule.path.clone();
-                        let relative_path = submodule.relative_path.clone();
-                        let submodule_detail = SubmoduleDetail {
-                            name: submodule.name.clone(),
-                            path: submodule.path.display().to_string(),
-                            url: submodule.url.clone(),
-                            is_initialized: submodule.is_initialized,
-                        };
-                        let is_initialized = submodule.is_initialized;
-
-                        let item = div()
-                            .id(ElementId::Name(id.clone().into()))
+                            .id(ElementId::Name(format!("repo-{i}").into()))
                             .flex_shrink_0()
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(8.0))
-                            .pl(px(34.0))
-                            .pr(px(10.0))
-                            .py(px(6.0))
+                            .px(px(10.0))
+                            .py(px(8.0))
                             .bg(bg)
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _event, _window, cx| {
-                                this.begin_select_submodule(i, j, relative_path.clone());
+                                let Some(repo) = this.repos.get(i).cloned() else {
+                                    return;
+                                };
+                                let path = repo.path.clone();
+                                this.begin_select(i);
                                 cx.notify();
-                                let path = path.clone();
-                                let relative_path = relative_path.clone();
-                                let submodule_detail = submodule_detail.clone();
                                 this.detail_task = Some(cx.spawn(async move |entity, cx| {
                                     let (detail, log_entries, canvas_layout) = cx
                                         .background_executor()
                                         .spawn(async move {
-                                            let (detail, log_entries) = if is_initialized {
-                                                (
-                                                    git_ops::get_repo_detail(&path),
-                                                    git_ops::get_commit_log(&path, 200),
-                                                )
-                                            } else {
-                                                (None, Vec::new())
-                                            };
                                             (
-                                                detail,
-                                                log_entries,
-                                                is_initialized
-                                                    .then(|| {
-                                                        commit_canvas::load_layout_for_path(
-                                                            &path, 200,
-                                                        )
-                                                    })
-                                                    .flatten(),
+                                                git_ops::get_repo_detail(&path),
+                                                git_ops::get_commit_log(&path, 200),
+                                                commit_canvas::load_layout(&repo, 200),
                                             )
                                         })
                                         .await;
                                     entity
                                         .update(cx, |this, cx| {
                                             this.apply_detail(
-                                                RepoSelection::Submodule {
-                                                    repo_index: i,
-                                                    submodule_index: j,
-                                                    relative_path,
-                                                },
+                                                RepoSelection::Repo(i),
                                                 detail,
-                                                Some(submodule_detail),
+                                                None,
                                                 log_entries,
                                                 canvas_layout,
                                             );
@@ -288,41 +102,197 @@ impl GitMasterApp {
                                         .ok();
                                 }));
                             }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+                                    if this.repos.get(i).is_none() {
+                                        return;
+                                    }
+                                    this.open_context_menu(i, event.position);
+                                    cx.notify();
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("repo-{i}-toggle").into()))
+                                    .w(px(14.0))
+                                    .text_xs()
+                                    .text_color(rgb(theme::TEXT_SUBTLE))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        cx.stop_propagation();
+                                        if this
+                                            .repos
+                                            .get(i)
+                                            .is_some_and(|repo| !repo.submodules.is_empty())
+                                        {
+                                            this.toggle_repo_expanded(i);
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .child(if has_submodules {
+                                        if is_expanded { "▾" } else { "▸" }
+                                    } else {
+                                        ""
+                                    }),
+                            )
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .flex_grow()
                                     .overflow_x_hidden()
-                                    .child(div().text_sm().child(submodule.name.clone()))
+                                    .child(div().text_sm().child(repo.name.clone()))
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(rgb(theme::TEXT_SUBTLE))
-                                            .child(submodule.current_branch.clone()),
-                                    ),
+                                            .child(format!("Branch: {}", repo.current_branch)),
+                                    )
+                                    .children(repo.remote_statuses.iter().map(|status| {
+                                        div()
+                                            .text_xs()
+                                            .text_color(rgb(theme::sync_color(status.counts)))
+                                            .child(status.label())
+                                    })),
                             )
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div().text_xs().text_color(dirty_color).child(dirty_icon),
-                                    )
-                                    .children(ahead_behind.map(|ab| {
-                                        div().text_xs().text_color(rgb(theme::YELLOW)).child(ab)
-                                    })),
+                                div().flex().flex_row().items_center().gap(px(4.0)).child(
+                                    div().text_xs().text_color(dirty_color).child(dirty_icon),
+                                ),
                             );
 
-                        self.track(&id, item)
-                    }));
-                }
+                    let mut items = vec![self.track(&format!("repo-{i}"), item)];
+                    if is_expanded {
+                        items.extend(repo.submodules.iter().enumerate().map(|(j, submodule)| {
+                            let id = format!("repo-{i}-submodule-{j}");
+                            let is_selected = self.selected
+                                == Some(RepoSelection::Submodule {
+                                    repo_index: i,
+                                    submodule_index: j,
+                                    relative_path: submodule.relative_path.clone(),
+                                });
+                            let bg = if is_selected {
+                                rgb(theme::BG_OVERLAY)
+                            } else {
+                                rgb(theme::BG_BASE)
+                            };
+                            let dirty_color = if submodule.is_dirty {
+                                rgb(theme::RED)
+                            } else if submodule.is_initialized {
+                                rgb(theme::GREEN)
+                            } else {
+                                rgb(theme::YELLOW)
+                            };
+                            let dirty_icon = if submodule.is_dirty {
+                                "●"
+                            } else if submodule.is_initialized {
+                                "✓"
+                            } else {
+                                "!"
+                            };
+                            let path = submodule.path.clone();
+                            let relative_path = submodule.relative_path.clone();
+                            let submodule_detail = SubmoduleDetail {
+                                name: submodule.name.clone(),
+                                path: submodule.path.display().to_string(),
+                                url: submodule.url.clone(),
+                                is_initialized: submodule.is_initialized,
+                            };
+                            let is_initialized = submodule.is_initialized;
 
-                items
-            })
-            .collect();
+                            let item = div()
+                                .id(ElementId::Name(id.clone().into()))
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .pl(px(34.0))
+                                .pr(px(10.0))
+                                .py(px(6.0))
+                                .bg(bg)
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _event, _window, cx| {
+                                    this.begin_select_submodule(i, j, relative_path.clone());
+                                    cx.notify();
+                                    let path = path.clone();
+                                    let relative_path = relative_path.clone();
+                                    let submodule_detail = submodule_detail.clone();
+                                    this.detail_task = Some(cx.spawn(async move |entity, cx| {
+                                        let (detail, log_entries, canvas_layout) = cx
+                                            .background_executor()
+                                            .spawn(async move {
+                                                let (detail, log_entries) = if is_initialized {
+                                                    (
+                                                        git_ops::get_repo_detail(&path),
+                                                        git_ops::get_commit_log(&path, 200),
+                                                    )
+                                                } else {
+                                                    (None, Vec::new())
+                                                };
+                                                (
+                                                    detail,
+                                                    log_entries,
+                                                    is_initialized
+                                                        .then(|| {
+                                                            commit_canvas::load_layout_for_path(
+                                                                &path, 200,
+                                                            )
+                                                        })
+                                                        .flatten(),
+                                                )
+                                            })
+                                            .await;
+                                        entity
+                                            .update(cx, |this, cx| {
+                                                this.apply_detail(
+                                                    RepoSelection::Submodule {
+                                                        repo_index: i,
+                                                        submodule_index: j,
+                                                        relative_path,
+                                                    },
+                                                    detail,
+                                                    Some(submodule_detail),
+                                                    log_entries,
+                                                    canvas_layout,
+                                                );
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                    }));
+                                }))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .flex_grow()
+                                        .overflow_x_hidden()
+                                        .child(div().text_sm().child(submodule.name.clone()))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(theme::TEXT_SUBTLE))
+                                                .child(submodule.current_branch.clone()),
+                                        )
+                                        .children(submodule.remote_statuses.iter().map(|status| {
+                                            div()
+                                                .text_xs()
+                                                .text_color(rgb(theme::sync_color(status.counts)))
+                                                .child(status.label())
+                                        })),
+                                )
+                                .child(div().flex().flex_row().items_center().gap(px(4.0)).child(
+                                    div().text_xs().text_color(dirty_color).child(dirty_icon),
+                                ));
+
+                            self.track(&id, item)
+                        }));
+                    }
+
+                    items
+                })
+                .collect();
 
         let list = div()
             .id("repo-list")
@@ -449,84 +419,26 @@ impl GitMasterApp {
         let menu = self.context_menu.as_ref()?;
         let repo_index = menu.repo_index;
         let position = menu.position;
-        let show_branches = menu.show_branches;
-        let current_branch = self
-            .repos
-            .get(repo_index)
-            .map(|r| r.current_branch.clone())
-            .unwrap_or_default();
-
-        let branch_items: Vec<AnyElement> = if show_branches {
-            menu.branches
-                .iter()
-                .filter(|b| **b != current_branch)
-                .map(|branch| {
-                    let branch_name = branch.clone();
-                    let id_str = format!("ctx-branch-{branch_name}");
-                    let item = div()
-                        .id(ElementId::Name(id_str.clone().into()))
-                        .px(px(24.0))
-                        .py(px(6.0))
-                        .text_xs()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-                        .child(branch_name.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.close_context_menu();
-                            this.do_checkout(repo_index, branch_name.clone(), cx);
-                        }));
-                    self.track(&id_str, item)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let switch_branch = div()
-            .id("ctx-switch-branch")
-            .px(px(12.0))
-            .py(px(6.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-            .child(if show_branches {
-                "▾ Switch Branch"
-            } else {
-                "▸ Switch Branch"
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                if let Some(menu) = this.context_menu.as_mut() {
-                    menu.show_branches = !menu.show_branches;
-                }
-                cx.notify();
-            }));
-
-        let pull_rebase = div()
-            .id("ctx-pull-rebase")
-            .px(px(12.0))
-            .py(px(6.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-            .child("Pull --rebase")
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                this.close_context_menu();
-                this.do_pull_rebase(repo_index, cx);
-            }));
-
-        let push = div()
-            .id("ctx-push")
-            .px(px(12.0))
-            .py(px(6.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(rgb(theme::BG_OVERLAY)))
-            .child("Push")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                this.close_context_menu();
-                this.do_push(repo_index, window, cx);
-            }));
+        let items = [
+            ("ctx-open-directory", "Open Directory", false),
+            ("ctx-open-terminal", "Open Terminal Here", true),
+        ]
+        .into_iter()
+        .map(|(id, label, terminal)| {
+            let button = div()
+                .id(id)
+                .px(px(12.0))
+                .py(px(6.0))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(theme::BG_OVERLAY)))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.close_context_menu();
+                    this.open_repo_location(repo_index, terminal, cx);
+                }));
+            self.track(id, button)
+        });
 
         let menu_panel = div()
             .id("context-menu")
@@ -548,94 +460,47 @@ impl GitMasterApp {
                 this.close_context_menu();
                 cx.notify();
             }))
-            .child(self.track("ctx-switch-branch", switch_branch))
-            .children(branch_items)
-            .child(
-                div()
-                    .my(px(4.0))
-                    .mx(px(8.0))
-                    .h(px(1.0))
-                    .bg(rgb(theme::BG_OVERLAY)),
-            )
-            .child(self.track("ctx-pull-rebase", pull_rebase))
-            .child(self.track("ctx-push", push));
+            .children(items);
 
         Some(deferred(anchored().position(position).child(menu_panel)).into_any_element())
     }
 
-    fn do_checkout(&mut self, repo_index: usize, branch: String, cx: &mut Context<'_, Self>) {
-        let Some(repo) = self.repos.get(repo_index) else {
+    fn open_repo_location(
+        &mut self,
+        repo_index: usize,
+        terminal: bool,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some(path) = self.repos.get(repo_index).map(|repo| repo.path.clone()) else {
             return;
         };
-        let path = repo.path.clone();
-        self.busy = true;
-        self.set_status(format!("Checking out {branch}…"));
         cx.notify();
-        let branch_clone = branch.clone();
-        self.operation_task = Some(cx.spawn(async move |entity, cx| {
-            let refresh_path = path.clone();
-            let (result, refreshed) = cx
+        cx.spawn(async move |entity, cx| {
+            let result = cx
                 .background_executor()
-                .spawn(async move {
-                    let result = git_ops::checkout_branch(&path, &branch_clone);
-                    let refreshed = git_ops::build_repo_info(&path);
-                    (result, refreshed)
-                })
+                .spawn(async move { crate::desktop_actions::open(&path, terminal) })
                 .await;
-            entity
-                .update(cx, |this, cx| {
-                    match result {
-                        Ok(_) => this.set_status(format!("Switched to {branch}")),
-                        Err(e) => this.set_status(format!("Checkout failed: {e}")),
-                    }
-                    this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
-                    this.refresh_pushed_repo_details(repo_index, &refresh_path, cx);
-                    this.busy = false;
-                    cx.notify();
-                })
-                .ok();
-        }));
+            if let Err(error) = result {
+                entity
+                    .update(cx, |this, cx| {
+                        this.set_status(format!(
+                            "Cannot open {}: {error}",
+                            if terminal { "terminal" } else { "directory" }
+                        ));
+                        cx.notify();
+                    })
+                    .ok();
+            }
+        })
+        .detach();
     }
 
-    fn do_pull_rebase(&mut self, repo_index: usize, cx: &mut Context<'_, Self>) {
-        let Some(repo) = self.repos.get(repo_index) else {
-            return;
-        };
-        let path = repo.path.clone();
-        self.busy = true;
-        self.set_status("Pulling --rebase…".to_string());
-        cx.notify();
-        self.operation_task = Some(cx.spawn(async move |entity, cx| {
-            let refresh_path = path.clone();
-            let (result, refreshed) = cx
-                .background_executor()
-                .spawn(async move {
-                    let result = git_ops::pull_rebase(&path);
-                    let refreshed = git_ops::build_repo_info(&path);
-                    (result, refreshed)
-                })
-                .await;
-            entity
-                .update(cx, |this, cx| {
-                    match result {
-                        Ok(msg) => {
-                            if msg.is_empty() {
-                                this.set_status("Pull --rebase done".to_string());
-                            } else {
-                                this.set_status(format!("Pull --rebase: {msg}"));
-                            }
-                        }
-                        Err(e) => this.set_status(format!("Pull failed: {e}")),
-                    }
-                    this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
-                    this.busy = false;
-                    cx.notify();
-                })
-                .ok();
-        }));
-    }
-
-    fn do_push(&mut self, repo_index: usize, window: &mut Window, cx: &mut Context<'_, Self>) {
+    pub(super) fn do_push(
+        &mut self,
+        repo_index: usize,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         let Some(repo) = self.repos.get(repo_index) else {
             return;
         };
@@ -746,7 +611,7 @@ impl GitMasterApp {
         }));
     }
 
-    fn refresh_pushed_repo_details(
+    pub(super) fn refresh_pushed_repo_details(
         &mut self,
         repo_index: usize,
         expected_path: &std::path::Path,
@@ -760,7 +625,7 @@ impl GitMasterApp {
         let path = expected_path.to_path_buf();
         self.loading_detail = true;
         let branches = self
-            .canvas_visible_branches
+            .log_visible_branches
             .iter()
             .cloned()
             .collect::<Vec<_>>();

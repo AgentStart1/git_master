@@ -2,6 +2,10 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(test)]
+#[path = "reset_tests.rs"]
+mod reset_tests;
+
 use chrono::TimeZone;
 use git2::{BranchType, Oid, Repository, Sort, StatusOptions};
 
@@ -154,7 +158,7 @@ pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
 
 /// Fetch a remote and make the current local branch exactly match its
 /// corresponding remote-tracking branch. This intentionally discards local
-/// commits and working-tree changes, so callers must confirm with the user.
+/// commits, so callers must confirm with the user. Uncommitted changes block reset.
 pub fn reset_to_remote_branch(
     repo_path: &Path,
     remote: &str,
@@ -179,11 +183,37 @@ pub fn reset_to_remote_branch(
     let _ = crate::operation_log::append(&format!(
         "repo={repo_path:?} reset target={target} oid={target_oid}"
     ));
-    run_git(repo_path, ["reset", "--hard", &target, "--"])
+    validate_reset_branch(repo_path, branch)?;
+    // Pin the fetched commit and retain Git's own protection if edits arrive
+    // after validation. Never use --hard for this operation.
+    run_git(
+        repo_path,
+        ["reset", "--keep", &target_oid.to_string(), "--"],
+    )
 }
 
 fn validate_reset_branch(path: &Path, expected: &str) -> Result<(), String> {
     let repo = Repository::open(path).map_err(|error| error.to_string())?;
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err("Reset blocked: a merge, rebase or other Git operation is in progress.".into());
+    }
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(false);
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(|error| format!("Reset blocked: cannot verify a clean working tree: {error}"))?;
+    if statuses
+        .iter()
+        .any(|entry| !entry.status().is_empty() && entry.status() != git2::Status::IGNORED)
+    {
+        let message = "Reset blocked: uncommitted changes or untracked files exist. Commit or stash them first.";
+        let _ = crate::operation_log::append(&format!("repo={path:?} {message}"));
+        return Err(message.into());
+    }
     let head = repo.head().map_err(|error| error.to_string())?;
     if !head.is_branch() || head.name().ok() != Some(format!("refs/heads/{expected}").as_str()) {
         let message = format!(

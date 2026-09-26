@@ -13,6 +13,8 @@ pub struct LogListLayout {
     pub entries: Vec<LogEntry>,
     columns: Vec<usize>,
     edges: Vec<(usize, usize)>,
+    routes: Vec<Vec<(f32, f32)>>,
+    width_columns: f32,
     missing: Vec<usize>,
 }
 
@@ -34,13 +36,51 @@ impl LogListLayout {
                 }
             }
         }
+        let columns = branch_columns(entries);
+        let (routes, width_columns) = route_edges(&columns, &edges);
         Self {
             entries: entries.to_vec(),
-            columns: branch_columns(entries),
+            columns,
             edges,
+            routes,
+            width_columns,
             missing,
         }
     }
+}
+
+/// Route long edges between node columns, never through an unrelated node.
+/// Channels can be reused only after the previous edge has ended.
+fn route_edges(columns: &[usize], edges: &[(usize, usize)]) -> (Vec<Vec<(f32, f32)>>, f32) {
+    let mut channel_ends: Vec<usize> = Vec::new();
+    let mut width = columns.iter().copied().max().unwrap_or(0) as f32;
+    let routes = edges
+        .iter()
+        .map(|&(from, to)| {
+            let start = (columns[from] as f32, from as f32);
+            let end = (columns[to] as f32, to as f32);
+            if columns[from] == columns[to]
+                && columns[from + 1..to]
+                    .iter()
+                    .all(|column| *column != columns[from])
+            {
+                return vec![start, end];
+            }
+            let channel = channel_ends
+                .iter()
+                .position(|last| *last <= from)
+                .unwrap_or(channel_ends.len());
+            if channel == channel_ends.len() {
+                channel_ends.push(to);
+            } else {
+                channel_ends[channel] = to;
+            }
+            let x = channel as f32 + 0.5;
+            width = width.max(x);
+            vec![start, (x, from as f32 + 0.35), (x, to as f32 - 0.35), end]
+        })
+        .collect();
+    (routes, width + 2.0)
 }
 
 impl GitMasterApp {
@@ -52,7 +92,7 @@ impl GitMasterApp {
                 .into_any_element();
         };
         let graph = layout.list.clone();
-        let width = (graph.columns.iter().copied().max().unwrap_or(0) + 2) as f32 * COLUMN_WIDTH;
+        let width = graph.width_columns * COLUMN_WIDTH;
         let height = graph.entries.len() as f32 * ROW_HEIGHT;
         let paint_graph = graph.clone();
         let drawing = canvas(
@@ -65,13 +105,19 @@ impl GitMasterApp {
                         bounds.origin.y + px(index as f32 * ROW_HEIGHT + ROW_HEIGHT / 2.0),
                     )
                 };
-                for &(from, to) in &paint_graph.edges {
-                    let start = position(from);
-                    let end = position(to);
+                for (&(from, _), route) in paint_graph.edges.iter().zip(&paint_graph.routes) {
                     let mut path = PathBuilder::stroke(px(2.0));
-                    path.move_to(start);
-                    path.line_to(point(start.x, end.y - px(ROW_HEIGHT / 2.0)));
-                    path.line_to(end);
+                    for (index, &(column, row)) in route.iter().enumerate() {
+                        let point = point(
+                            bounds.origin.x + px(16.0 + column * COLUMN_WIDTH),
+                            bounds.origin.y + px((row + 0.5) * ROW_HEIGHT),
+                        );
+                        if index == 0 {
+                            path.move_to(point);
+                        } else {
+                            path.line_to(point);
+                        }
+                    }
                     if let Ok(path) = path.build() {
                         window.paint_path(path, rgb(theme::graph_color(paint_graph.columns[from])));
                     }
@@ -197,5 +243,47 @@ mod tests {
         assert_eq!(graph.edges, [(0, 1), (0, 2), (1, 3), (2, 3)]);
         assert_ne!(graph.columns[1], graph.columns[2]);
         assert_eq!(graph.missing, [3]);
+        assert_routes_avoid_nodes(&graph);
+    }
+
+    fn assert_routes_avoid_nodes(graph: &LogListLayout) {
+        for (&(from, to), route) in graph.edges.iter().zip(&graph.routes) {
+            for (row, &column) in graph.columns.iter().enumerate() {
+                if row == from || row == to {
+                    continue;
+                }
+                let (x, y) = (column as f32, row as f32);
+                for pair in route.windows(2) {
+                    let ((ax, ay), (bx, by)) = (pair[0], pair[1]);
+                    let cross = (x - ax) * (by - ay) - (y - ay) * (bx - ax);
+                    let within =
+                        x >= ax.min(bx) && x <= ax.max(bx) && y >= ay.min(by) && y <= ay.max(by);
+                    assert!(
+                        !(cross.abs() < 0.0001 && within),
+                        "edge {from}->{to} crosses node {row}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn routes_avoid_intermediate_nodes_and_reserve_overlapping_channels() {
+        // A merge's second-parent edge must leave the first-parent column
+        // before it encounters the intervening first-parent commit.
+        let columns = vec![0, 0, 1, 0];
+        let edges = vec![(0, 1), (0, 2), (1, 3), (2, 3)];
+        let (routes, width_columns) = route_edges(&columns, &edges);
+        let graph = LogListLayout {
+            columns,
+            edges,
+            routes,
+            width_columns,
+            ..Default::default()
+        };
+        assert_routes_avoid_nodes(&graph);
+        assert_eq!(graph.routes[1][1], (0.5, 0.35));
+        let (routes, _) = route_edges(&[0, 1, 0, 1, 0], &[(0, 3), (1, 4)]);
+        assert_ne!(routes[0][1].0, routes[1][1].0);
     }
 }

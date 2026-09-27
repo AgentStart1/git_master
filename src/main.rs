@@ -1,7 +1,11 @@
 mod app_state;
+mod batch_ops;
+mod commit_details;
+mod desktop_actions;
 mod git_ops;
 mod models;
 mod operation_log;
+mod repo_actions;
 #[cfg(feature = "test-rpc")]
 mod test_rpc;
 mod ui;

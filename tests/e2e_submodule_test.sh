@@ -93,11 +93,16 @@ def find(n, nid):
 canvas = find(tree, 'commit-canvas')
 assert canvas, 'commit-canvas not found'
 lanes = [c for c in canvas.get('children', []) if c.get('node_type') == 'group']
-assert len(lanes) == 3, f'Expected main + submodule + HEAD lanes, got: {lanes}'
+assert len(lanes) == 2, f'Expected only main + submodule lanes, got: {lanes}'
+assert not any(lane.get('id') == 'commit-lane-heads' for lane in lanes), lanes
 assert any(c.get('text') == 'delta' for c in lanes), lanes
 assert any(c.get('text') in ('lib', 'modules/lib') for c in lanes), lanes
 
 nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
+heads = [node for node in nodes if node.get('id', '').startswith('commit-node-heads-head:')]
+assert heads, f'Free HEAD cards missing: {nodes}'
+head_edges = [c.get('text', '') for c in canvas.get('children', []) if c.get('node_type') == 'graph-edge']
+assert any('(head)' in edge for edge in head_edges), f'HEAD links missing: {head_edges}'
 placeholder_texts = [
     child.get('text', '')
     for node in nodes
@@ -137,10 +142,15 @@ def find(n, nid):
 canvas = find(tree, 'commit-canvas')
 assert canvas, 'commit-canvas not found'
 lanes = [c for c in canvas.get('children', []) if c.get('node_type') == 'group']
-assert len(lanes) == 3, f'Expected main + submodule + HEAD lanes, got: {lanes}'
+assert len(lanes) == 2, f'Expected only main + submodule lanes, got: {lanes}'
+assert not any(lane.get('id') == 'commit-lane-heads' for lane in lanes), lanes
 assert any(c.get('text') == 'epsilon' for c in lanes), lanes
 
 nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
+heads = [node for node in nodes if node.get('id', '').startswith('commit-node-heads-head:')]
+assert heads, f'Free HEAD cards missing: {nodes}'
+head_edges = [c.get('text', '') for c in canvas.get('children', []) if c.get('node_type') == 'graph-edge']
+assert any('(head)' in edge for edge in head_edges), f'HEAD links missing: {head_edges}'
 submodule_nodes = [node for node in nodes if node.get('id', '').startswith('commit-node-submodule:modules/lib-')]
 assert submodule_nodes, f'Initialized submodule commit nodes missing: {nodes}'
 texts = [child.get('text', '') for node in submodule_nodes for child in node.get('children', [])]
@@ -178,8 +188,12 @@ def find(n, nid):
 canvas = find(tree, 'commit-canvas')
 assert canvas, 'commit-canvas not found'
 lanes = [c.get('text') for c in canvas.get('children', []) if c.get('node_type') == 'group']
-assert lanes == ['lib', 'Branch HEADs'], f'Expected selected lib + HEAD lanes, got: {lanes}'
+assert lanes == ['lib'], f'Expected only selected lib lane, got: {lanes}'
 nodes = [c for c in canvas.get('children', []) if c.get('node_type') == 'commit-node']
+heads = [node for node in nodes if node.get('id', '').startswith('commit-node-heads-head:')]
+assert heads, f'Free HEAD cards missing: {nodes}'
+head_edges = [c.get('text', '') for c in canvas.get('children', []) if c.get('node_type') == 'graph-edge']
+assert any('(head)' in edge for edge in head_edges), f'HEAD links missing: {head_edges}'
 texts = [child.get('text', '') for node in nodes for child in node.get('children', [])]
 assert any('init lib' in text for text in texts), f'Submodule history missing: {texts}'
 assert not any('add submodule' in text for text in texts), f'Parent history leaked into canvas: {texts}'

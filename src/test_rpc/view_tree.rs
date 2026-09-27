@@ -177,6 +177,20 @@ impl TestViewTreeSnapshot {
 
         bar = bar.with_child(
             ViewNode::new("button")
+                .with_id("fetch-all-btn")
+                .with_text("Fetch All")
+                .with_interactive()
+                .with_bounds_from(reg, "fetch-all-btn"),
+        );
+        bar = bar.with_child(
+            ViewNode::new("button")
+                .with_id("switch-all-main-btn")
+                .with_text("Switch All to Main")
+                .with_interactive()
+                .with_bounds_from(reg, "switch-all-main-btn"),
+        );
+        bar = bar.with_child(
+            ViewNode::new("button")
                 .with_id("change-dir-btn")
                 .with_text("Open Directory")
                 .with_interactive()
@@ -202,11 +216,6 @@ impl TestViewTreeSnapshot {
             .flat_map(|(i, repo)| {
                 let id = format!("repo-{i}");
                 let dirty_text = if repo.is_dirty { "●" } else { "✓" };
-                let ab = if repo.ahead > 0 || repo.behind > 0 {
-                    Some(format!("↑{} ↓{}", repo.ahead, repo.behind))
-                } else {
-                    None
-                };
 
                 let mut item = ViewNode::new("list-item")
                     .with_id(&id)
@@ -219,10 +228,9 @@ impl TestViewTreeSnapshot {
                     )
                     .with_child(ViewNode::new("text").with_text(dirty_text));
 
-                if let Some(ab) = ab {
-                    item = item.with_child(ViewNode::new("text").with_text(&ab));
+                for status in &repo.remote_statuses {
+                    item = item.with_child(ViewNode::new("text").with_text(&status.label()));
                 }
-
                 let mut items = vec![item];
                 if self.expanded_repos.contains(&i) {
                     items.extend(repo.submodules.iter().enumerate().map(|(j, submodule)| {
@@ -241,13 +249,9 @@ impl TestViewTreeSnapshot {
                             .with_child(ViewNode::new("text").with_text(&submodule.name))
                             .with_child(ViewNode::new("text").with_text(&submodule.current_branch))
                             .with_child(ViewNode::new("text").with_text(dirty_text));
-
-                        if submodule.ahead > 0 || submodule.behind > 0 {
+                        for status in &submodule.remote_statuses {
                             item =
-                                item.with_child(ViewNode::new("text").with_text(&format!(
-                                    "↑{} ↓{}",
-                                    submodule.ahead, submodule.behind
-                                )));
+                                item.with_child(ViewNode::new("text").with_text(&status.label()));
                         }
                         item
                     }));
@@ -368,7 +372,7 @@ impl TestViewTreeSnapshot {
     }
 
     fn build_log_node(&self) -> ViewNode {
-        let toolbar = ViewNode::new("panel")
+        let mut toolbar = ViewNode::new("panel")
             .with_id("log-view-toolbar")
             .with_child(
                 ViewNode::new("button")
@@ -383,6 +387,42 @@ impl TestViewTreeSnapshot {
                     .with_interactive(),
             );
 
+        if let Some(detail) = &self.detail {
+            toolbar = toolbar.with_child(
+                ViewNode::new("panel")
+                    .with_id("log-branches-scroll")
+                    .with_children(
+                        detail
+                            .branches
+                            .iter()
+                            .map(|branch| {
+                                ViewNode::new("button")
+                                    .with_id(&format!("log-branch-{branch}"))
+                                    .with_text(branch)
+                                    .with_interactive()
+                            })
+                            .collect(),
+                    ),
+            );
+            for (id, text) in [("log-pull", "Pull --rebase"), ("log-push", "Push")] {
+                toolbar = toolbar.with_child(
+                    ViewNode::new("button")
+                        .with_id(id)
+                        .with_text(text)
+                        .with_interactive(),
+                );
+            }
+            for remote in &detail.remotes {
+                for action in ["fetch", "reset"] {
+                    toolbar = toolbar.with_child(
+                        ViewNode::new("button")
+                            .with_id(&format!("log-remote-{}-{action}", remote.name))
+                            .with_text(&format!("{} {action}", remote.name))
+                            .with_interactive(),
+                    );
+                }
+            }
+        }
         let body = match self.log_view_mode {
             LogViewMode::List => self.build_log_list_node(),
             LogViewMode::Canvas => self.build_commit_canvas_node(),
@@ -488,60 +528,22 @@ impl TestViewTreeSnapshot {
     }
 
     fn build_context_menu_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> Option<ViewNode> {
-        let menu = self.context_menu.as_ref()?;
-        let current_branch = self
-            .repos
-            .get(menu.repo_index)
-            .map(|r| r.current_branch.as_str())
-            .unwrap_or_default();
-
+        self.context_menu.as_ref()?;
         let mut node = ViewNode::new("menu")
             .with_id("context-menu")
-            .with_bounds_from(reg, "context-menu")
-            .with_child(
+            .with_bounds_from(reg, "context-menu");
+        for (id, label) in [
+            ("ctx-open-directory", "Open Directory"),
+            ("ctx-open-terminal", "Open Terminal Here"),
+        ] {
+            node = node.with_child(
                 ViewNode::new("menu-item")
-                    .with_id("ctx-switch-branch")
-                    .with_text(if menu.show_branches {
-                        "▾ Switch Branch"
-                    } else {
-                        "▸ Switch Branch"
-                    })
+                    .with_id(id)
+                    .with_text(label)
                     .with_interactive()
-                    .with_bounds_from(reg, "ctx-switch-branch"),
+                    .with_bounds_from(reg, id),
             );
-
-        if menu.show_branches {
-            let branch_items: Vec<ViewNode> = menu
-                .branches
-                .iter()
-                .filter(|b| b.as_str() != current_branch)
-                .map(|b| {
-                    let id = format!("ctx-branch-{b}");
-                    ViewNode::new("menu-item")
-                        .with_id(&id)
-                        .with_text(b)
-                        .with_interactive()
-                        .with_bounds_from(reg, &id)
-                })
-                .collect();
-            node = node.with_children(branch_items);
         }
-
-        node = node
-            .with_child(
-                ViewNode::new("menu-item")
-                    .with_id("ctx-pull-rebase")
-                    .with_text("Pull --rebase")
-                    .with_interactive()
-                    .with_bounds_from(reg, "ctx-pull-rebase"),
-            )
-            .with_child(
-                ViewNode::new("menu-item")
-                    .with_id("ctx-push")
-                    .with_text("Push")
-                    .with_interactive()
-                    .with_bounds_from(reg, "ctx-push"),
-            );
 
         Some(node)
     }

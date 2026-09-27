@@ -2,6 +2,10 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(test)]
+#[path = "reset_tests.rs"]
+mod reset_tests;
+
 use chrono::TimeZone;
 use git2::{BranchType, Oid, Repository, Sort, StatusOptions};
 
@@ -38,17 +42,15 @@ pub fn build_repo_info(path: &Path) -> Option<RepoInfo> {
 
     let is_dirty = check_dirty(&repo);
     let current_branch = get_branch_name(&repo);
-    let (ahead, behind) = get_ahead_behind(&repo, &current_branch);
     let submodules = list_submodules(path, &repo);
 
     Some(RepoInfo {
         name,
         path: path.to_path_buf(),
         is_dirty,
-        ahead,
-        behind,
         current_branch,
         submodules,
+        remote_statuses: crate::repo_actions::remote_statuses(&repo),
     })
 }
 
@@ -80,7 +82,7 @@ pub fn has_upstream(repo_path: &Path, branch_name: &str) -> bool {
     branch.upstream().is_ok()
 }
 
-fn run_git<I, S>(repo_path: &Path, args: I) -> Result<String, String>
+pub(crate) fn run_git<I, S>(repo_path: &Path, args: I) -> Result<String, String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -154,7 +156,7 @@ pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
 
 /// Fetch a remote and make the current local branch exactly match its
 /// corresponding remote-tracking branch. This intentionally discards local
-/// commits and working-tree changes, so callers must confirm with the user.
+/// commits, so callers must confirm with the user. Uncommitted changes block reset.
 pub fn reset_to_remote_branch(
     repo_path: &Path,
     remote: &str,
@@ -179,11 +181,37 @@ pub fn reset_to_remote_branch(
     let _ = crate::operation_log::append(&format!(
         "repo={repo_path:?} reset target={target} oid={target_oid}"
     ));
-    run_git(repo_path, ["reset", "--hard", &target, "--"])
+    validate_reset_branch(repo_path, branch)?;
+    // Pin the fetched commit and retain Git's own protection if edits arrive
+    // after validation. Never use --hard for this operation.
+    run_git(
+        repo_path,
+        ["reset", "--keep", &target_oid.to_string(), "--"],
+    )
 }
 
 fn validate_reset_branch(path: &Path, expected: &str) -> Result<(), String> {
     let repo = Repository::open(path).map_err(|error| error.to_string())?;
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err("Reset blocked: a merge, rebase or other Git operation is in progress.".into());
+    }
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(false);
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(|error| format!("Reset blocked: cannot verify a clean working tree: {error}"))?;
+    if statuses
+        .iter()
+        .any(|entry| !entry.status().is_empty() && entry.status() != git2::Status::IGNORED)
+    {
+        let message = "Reset blocked: uncommitted changes or untracked files exist. Commit or stash them first.";
+        let _ = crate::operation_log::append(&format!("repo={path:?} {message}"));
+        return Err(message.into());
+    }
     let head = repo.head().map_err(|error| error.to_string())?;
     if !head.is_branch() || head.name().ok() != Some(format!("refs/heads/{expected}").as_str()) {
         let message = format!(
@@ -248,25 +276,26 @@ fn list_submodules(repo_path: &Path, repo: &Repository) -> Vec<SubmoduleInfo> {
             let url = submodule.url().ok().flatten().map(String::from);
             let repo = Repository::open(&path).ok();
             let is_initialized = repo.is_some();
-            let (current_branch, is_dirty, ahead, behind) = repo
+            let (current_branch, is_dirty) = repo
                 .as_ref()
                 .map(|repo| {
                     let current_branch = get_branch_name(repo);
                     let is_dirty = check_dirty(repo);
-                    let (ahead, behind) = get_ahead_behind(repo, &current_branch);
-                    (current_branch, is_dirty, ahead, behind)
+                    (current_branch, is_dirty)
                 })
-                .unwrap_or_else(|| ("Not initialized".to_string(), false, 0, 0));
+                .unwrap_or_else(|| ("Not initialized".to_string(), false));
 
             SubmoduleInfo {
+                remote_statuses: repo
+                    .as_ref()
+                    .map(crate::repo_actions::remote_statuses)
+                    .unwrap_or_default(),
                 name,
                 path,
                 relative_path,
                 url,
                 is_initialized,
                 is_dirty,
-                ahead,
-                behind,
                 current_branch,
             }
         })
@@ -546,27 +575,6 @@ fn get_branch_name(repo: &Repository) -> String {
         .ok()
         .and_then(|r| r.shorthand().ok().map(String::from))
         .unwrap_or_else(|| "HEAD detached".into())
-}
-
-fn get_ahead_behind(repo: &Repository, branch_name: &str) -> (usize, usize) {
-    let local = match repo.find_branch(branch_name, BranchType::Local) {
-        Ok(b) => b,
-        Err(_) => return (0, 0),
-    };
-    let upstream = match local.upstream() {
-        Ok(u) => u,
-        Err(_) => return (0, 0),
-    };
-    let local_oid = match local.get().target() {
-        Some(o) => o,
-        None => return (0, 0),
-    };
-    let upstream_oid = match upstream.get().target() {
-        Some(o) => o,
-        None => return (0, 0),
-    };
-    repo.graph_ahead_behind(local_oid, upstream_oid)
-        .unwrap_or((0, 0))
 }
 
 fn build_file_status(repo: &Repository) -> FileStatusSummary {

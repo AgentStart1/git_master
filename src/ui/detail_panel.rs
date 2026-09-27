@@ -3,7 +3,6 @@ use gpui::*;
 use crate::app_state::{DetailTab, GitMasterApp, RepoSelection};
 use crate::git_ops;
 use crate::models::{RepoDetail, SubmoduleDetail};
-use crate::ui::commit_canvas::LogViewMode;
 use crate::ui::{commit_canvas, theme};
 
 impl GitMasterApp {
@@ -204,281 +203,6 @@ impl GitMasterApp {
             .child(self.track("init-submodule-btn", button))
             .into_any_element()
     }
-
-    fn render_log_tab(&self, cx: &mut Context<'_, Self>) -> AnyElement {
-        let list_bg = if self.log_view_mode == LogViewMode::List {
-            rgb(theme::BG_OVERLAY)
-        } else {
-            rgb(theme::BG_SURFACE)
-        };
-        let canvas_bg = if self.log_view_mode == LogViewMode::Canvas {
-            rgb(theme::BG_OVERLAY)
-        } else {
-            rgb(theme::BG_SURFACE)
-        };
-        let view_controls = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.0))
-            .px(px(10.0))
-            .py(px(7.0))
-            .bg(rgb(theme::BG_SURFACE))
-            .border_b_1()
-            .border_color(rgb(theme::BG_OVERLAY))
-            .child(
-                div()
-                    .id("log-view-list")
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(list_bg)
-                    .cursor_pointer()
-                    .text_xs()
-                    .child("List")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_log_view_mode(LogViewMode::List);
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .id("log-view-canvas")
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(canvas_bg)
-                    .cursor_pointer()
-                    .text_xs()
-                    .child("Canvas")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_log_view_mode(LogViewMode::Canvas);
-                        cx.notify();
-                    })),
-            );
-
-        let canvas_remote_controls: Vec<AnyElement> = if self.log_view_mode != LogViewMode::Canvas {
-            Vec::new()
-        } else if let Some(detail) = self.detail.as_ref() {
-            detail
-                .remotes
-                .iter()
-                .map(|remote| {
-                    let remote_name = remote.name.clone();
-                    let fetch_id = format!("canvas-remote-{}-fetch", remote.name);
-                    let reset_id = format!("canvas-remote-{}-reset", remote.name);
-                    let fetch = div()
-                        .id(ElementId::Name(fetch_id.clone().into()))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(theme::ACCENT))
-                        .text_xs()
-                        .text_color(rgb(theme::BG_BASE))
-                        .cursor_pointer()
-                        .child("Fetch")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.do_fetch_selected_remote(remote_name.clone(), cx);
-                        }));
-                    let remote_name = remote.name.clone();
-                    let reset = div()
-                        .id(ElementId::Name(reset_id.clone().into()))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(theme::RED))
-                        .text_xs()
-                        .text_color(rgb(theme::BG_BASE))
-                        .cursor_pointer()
-                        .child("Reset")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.confirm_reset_selected_to_remote(remote_name.clone(), window, cx);
-                        }));
-
-                    div()
-                        .id(ElementId::Name(
-                            format!("canvas-remote-{}", remote.name).into(),
-                        ))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .px(px(8.0))
-                        .py(px(5.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(theme::BG_OVERLAY))
-                        .child(div().text_xs().child(remote.name.clone()))
-                        .child(self.track(&fetch_id, fetch))
-                        .child(self.track(&reset_id, reset))
-                        .into_any_element()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let canvas_branch_controls: Vec<AnyElement> = if self.log_view_mode != LogViewMode::Canvas {
-            Vec::new()
-        } else if let Some(detail) = self.detail.as_ref() {
-            detail
-                .branches
-                .iter()
-                .map(|branch| {
-                    let branch_name = branch.clone();
-                    let is_visible = if self.canvas_visible_branches.is_empty() {
-                        Self::default_canvas_visible_branches(detail).contains(branch)
-                    } else {
-                        self.canvas_visible_branches.contains(branch)
-                    };
-                    let background = if is_visible {
-                        rgb(theme::ACCENT)
-                    } else {
-                        rgb(theme::BG_OVERLAY)
-                    };
-                    div()
-                        .id(ElementId::Name(format!("canvas-branch-{branch}").into()))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .bg(background)
-                        .text_xs()
-                        .text_color(if is_visible {
-                            rgb(theme::BG_BASE)
-                        } else {
-                            rgb(theme::TEXT_PRIMARY)
-                        })
-                        .cursor_pointer()
-                        .child(branch.clone())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_canvas_branch(branch_name.clone(), cx);
-                        }))
-                        .into_any_element()
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let toolbar = div()
-            .flex()
-            .flex_col()
-            .bg(rgb(theme::BG_SURFACE))
-            .border_b_1()
-            .border_color(rgb(theme::BG_OVERLAY))
-            .child(view_controls)
-            .children((!canvas_branch_controls.is_empty()).then(|| {
-                div()
-                    .id("canvas-branches-scroll")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .pb(px(6.0))
-                    .overflow_x_scroll()
-                    .scrollbar_width(px(8.0))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_SUBTLE))
-                            .child("Branches"),
-                    )
-                    .children(canvas_branch_controls)
-            }))
-            .children((!canvas_remote_controls.is_empty()).then(|| {
-                div()
-                    .id("canvas-remotes-scroll")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .px(px(10.0))
-                    .pb(px(7.0))
-                    .overflow_x_scroll()
-                    .scrollbar_width(px(8.0))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_SUBTLE))
-                            .child("Remotes"),
-                    )
-                    .children(canvas_remote_controls)
-            }));
-
-        let body = match self.log_view_mode {
-            LogViewMode::List => self.render_log_list(),
-            LogViewMode::Canvas => self.render_commit_canvas(cx),
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .flex_grow()
-            .overflow_hidden()
-            .child(toolbar)
-            .child(body)
-            .into_any_element()
-    }
-
-    fn render_log_list(&self) -> AnyElement {
-        div()
-            .id("log-scroll")
-            .flex()
-            .flex_col()
-            .flex_grow()
-            .overflow_y_scroll()
-            .children(self.log_entries.iter().map(|entry| {
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(12.0))
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .border_b_1()
-                    .border_color(rgb(theme::BG_OVERLAY))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::YELLOW))
-                            .w(px(56.0))
-                            .child(entry.hash.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_grow()
-                            .gap(px(2.0))
-                            .child(div().text_sm().child(entry.message.clone()))
-                            .children(
-                                self.detail
-                                    .as_ref()
-                                    .and_then(|detail| detail.head_labels.get(&entry.full_hash))
-                                    .map(|labels| {
-                                        div().flex().flex_wrap().gap(px(4.0)).children(
-                                            labels.iter().map(|label| {
-                                                div()
-                                                    .px(px(5.0))
-                                                    .py(px(2.0))
-                                                    .rounded(px(3.0))
-                                                    .bg(rgb(theme::ACCENT))
-                                                    .text_xs()
-                                                    .text_color(rgb(theme::BG_BASE))
-                                                    .child(label.clone())
-                                            }),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .child(format!("{} — {}", entry.author, entry.date)),
-                            ),
-                    )
-            }))
-            .into_any_element()
-    }
 }
 
 fn info_row(label: &str, value: &str) -> impl IntoElement {
@@ -514,7 +238,7 @@ impl GitMasterApp {
             return;
         }
         let branches = self
-            .canvas_visible_branches
+            .log_visible_branches
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -557,7 +281,9 @@ impl GitMasterApp {
         }));
     }
 
-    fn default_canvas_visible_branches(detail: &RepoDetail) -> std::collections::BTreeSet<String> {
+    pub(super) fn default_log_visible_branches(
+        detail: &RepoDetail,
+    ) -> std::collections::BTreeSet<String> {
         let mut branches = std::collections::BTreeSet::new();
         if detail
             .branches
@@ -575,32 +301,30 @@ impl GitMasterApp {
         branches
     }
 
-    fn toggle_canvas_branch(&mut self, branch: String, cx: &mut Context<'_, Self>) {
+    pub(super) fn toggle_log_branch(&mut self, branch: String, cx: &mut Context<'_, Self>) {
         if self.busy {
             return;
         }
-        if self.canvas_visible_branches.is_empty()
-            && let Some(default_branches) = self
-                .detail
-                .as_ref()
-                .map(Self::default_canvas_visible_branches)
+        if self.log_visible_branches.is_empty()
+            && let Some(default_branches) =
+                self.detail.as_ref().map(Self::default_log_visible_branches)
         {
-            self.canvas_visible_branches = default_branches;
+            self.log_visible_branches = default_branches;
         }
-        if self.canvas_visible_branches.contains(&branch) {
-            if self.canvas_visible_branches.len() == 1 {
+        if self.log_visible_branches.contains(&branch) {
+            if self.log_visible_branches.len() == 1 {
                 self.set_status("At least one branch must remain visible");
                 cx.notify();
                 return;
             }
-            self.canvas_visible_branches.remove(&branch);
+            self.log_visible_branches.remove(&branch);
         } else {
-            self.canvas_visible_branches.insert(branch);
+            self.log_visible_branches.insert(branch);
         }
-        self.reload_canvas_for_visible_branches(cx);
+        self.reload_log_for_visible_branches(cx);
     }
 
-    fn reload_canvas_for_visible_branches(&mut self, cx: &mut Context<'_, Self>) {
+    fn reload_log_for_visible_branches(&mut self, cx: &mut Context<'_, Self>) {
         let Some((selection, path)) =
             self.selected
                 .as_ref()
@@ -623,7 +347,7 @@ impl GitMasterApp {
             return;
         };
         let branches = self
-            .canvas_visible_branches
+            .log_visible_branches
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -647,16 +371,20 @@ impl GitMasterApp {
                             .or_default()
                             .ensure_layout(layout);
                     }
+                    this.log_entries = layout
+                        .as_ref()
+                        .map(|layout| layout.list.entries.clone())
+                        .unwrap_or_default();
                     this.commit_canvas_layout = layout;
                     this.commit_canvas_interaction = None;
-                    this.set_status("Canvas updated");
+                    this.set_status("Git Log updated");
                     cx.notify();
                 })
                 .ok();
         }));
     }
 
-    fn selected_remote_action_target(
+    pub(super) fn selected_remote_action_target(
         &self,
     ) -> Option<(
         usize,
@@ -698,14 +426,14 @@ impl GitMasterApp {
         }
     }
 
-    fn do_fetch_selected_remote(&mut self, remote: String, cx: &mut Context<'_, Self>) {
+    pub(super) fn do_fetch_selected_remote(&mut self, remote: String, cx: &mut Context<'_, Self>) {
         if self.busy {
             return;
         }
         self.perform_remote_action(remote, false, cx);
     }
 
-    fn confirm_reset_selected_to_remote(
+    pub(super) fn confirm_reset_selected_to_remote(
         &mut self,
         remote: String,
         window: &mut Window,
@@ -729,7 +457,7 @@ impl GitMasterApp {
                     PromptLevel::Critical,
                     &format!("Reset current branch to '{remote}'?"),
                     Some(
-                        "This fetches the remote, then permanently discards local commits and uncommitted changes on the current branch.",
+                        "This fetches the remote and discards local commits on the current branch. Reset is blocked if there are uncommitted changes, untracked files, or a Git operation in progress.",
                     ),
                     &[
                         PromptButton::ok("Reset and discard changes"),
@@ -765,7 +493,7 @@ impl GitMasterApp {
             .map(|detail| detail.current_branch.clone())
             .unwrap_or_default();
         let canvas_branches = self
-            .canvas_visible_branches
+            .log_visible_branches
             .iter()
             .cloned()
             .collect::<Vec<_>>();
@@ -813,7 +541,7 @@ impl GitMasterApp {
                 .update(cx, |this, cx| {
                     match result {
                         Ok(_) if reset => this.set_status("Reset to remote complete"),
-                        Ok(_) => this.set_status("Fetch complete; canvas refreshed"),
+                        Ok(_) => this.set_status("Fetch complete; Git Log refreshed"),
                         Err(error) => this.set_status(format!("Remote action failed: {error}")),
                     }
                     this.apply_repo_refresh(repo_index, &refresh_path, refreshed);

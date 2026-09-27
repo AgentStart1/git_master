@@ -151,58 +151,66 @@ impl GitMasterApp {
         .top(px(0.0))
         .w(px(width))
         .h(px(height));
-        let rows = graph.entries.iter().map(|entry| {
-            let path = layout.repository_path.clone();
-            let hash = entry.full_hash.clone();
-            div()
-                .id(ElementId::Name(
-                    format!("log-commit-{}", entry.full_hash).into(),
-                ))
-                .cursor_pointer()
-                .hover(|style| style.bg(rgba(0x31324466)))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.open_commit_details(path.clone(), hash.clone(), cx)
-                }))
-                .h(px(ROW_HEIGHT))
-                .flex_shrink_0()
-                .flex()
-                .flex_col()
-                .justify_center()
-                .gap(px(3.0))
-                .pl(px(width + 12.0))
-                .pr(px(12.0))
-                .border_b_1()
-                .border_color(rgb(theme::BG_OVERLAY))
-                .child(
-                    div()
-                        .text_sm()
-                        .whitespace_nowrap()
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .child(entry.message.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.0))
-                        .text_xs()
-                        .text_color(rgb(theme::ACCENT))
-                        .children(
-                            self.detail
-                                .as_ref()
-                                .and_then(|detail| detail.head_labels.get(&entry.full_hash))
-                                .into_iter()
-                                .flatten()
-                                .map(|label| div().child(label.clone())),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(theme::TEXT_SUBTLE))
-                        .child(format!("{}  {} — {}", entry.hash, entry.author, entry.date)),
-                )
-        });
+        let rows =
+            graph.entries.iter().map(|entry| {
+                let path = layout.repository_path.clone();
+                let hash = entry.full_hash.clone();
+                div()
+                    .id(ElementId::Name(
+                        format!("log-commit-{}", entry.full_hash).into(),
+                    ))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_commit_details(path.clone(), hash.clone(), cx)
+                    }))
+                    .h(px(ROW_HEIGHT))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_row()
+                    .border_b_1()
+                    .border_color(rgb(theme::BORDER))
+                    .child(div().w(px(width)).h_full().flex_shrink_0())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .justify_center()
+                            .gap(px(3.0))
+                            .px(px(12.0))
+                            .h_full()
+                            .hover(|style| style.bg(rgb(theme::BG_ELEVATED)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(entry.message.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(6.0))
+                                    .text_xs()
+                                    .text_color(rgb(theme::ACCENT))
+                                    .children(
+                                        self.detail
+                                            .as_ref()
+                                            .and_then(|detail| {
+                                                detail.head_labels.get(&entry.full_hash)
+                                            })
+                                            .into_iter()
+                                            .flatten()
+                                            .map(|label| div().child(label.clone())),
+                                    ),
+                            )
+                            .child(div().text_xs().text_color(rgb(theme::TEXT_SUBTLE)).child(
+                                format!("{}  {} — {}", entry.hash, entry.author, entry.date),
+                            )),
+                    )
+            });
         div()
             .id("log-scroll")
             .flex_1()

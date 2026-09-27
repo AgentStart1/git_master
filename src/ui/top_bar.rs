@@ -59,8 +59,8 @@ impl GitMasterApp {
         let fetch_btn = div()
             .id("fetch-all-btn")
             .px(px(12.0))
-            .py(px(6.0))
-            .rounded(px(4.0))
+            .py(px(7.0))
+            .rounded(px(7.0))
             .text_sm()
             .bg(rgb(if can_fetch {
                 theme::ACCENT
@@ -81,8 +81,8 @@ impl GitMasterApp {
         let main_btn = div()
             .id("switch-all-main-btn")
             .px(px(12.0))
-            .py(px(6.0))
-            .rounded(px(4.0))
+            .py(px(7.0))
+            .rounded(px(7.0))
             .text_sm()
             .bg(rgb(if can_fetch {
                 theme::ACCENT
@@ -94,7 +94,7 @@ impl GitMasterApp {
             } else {
                 theme::TEXT_SUBTLE
             }))
-            .child("Switch All to Main")
+            .child("Use Main")
             .when(can_fetch, |button| button.cursor_pointer())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.run_batch(crate::batch_ops::BatchAction::SwitchMain, cx)
@@ -102,14 +102,14 @@ impl GitMasterApp {
 
         let btn = div()
             .id("change-dir-btn")
-            .px(px(12.0))
-            .py(px(6.0))
+            .px(px(13.0))
+            .py(px(7.0))
             .bg(rgb(theme::ACCENT))
             .text_color(rgb(theme::BG_BASE))
-            .rounded(px(4.0))
+            .rounded(px(7.0))
             .cursor_pointer()
             .text_sm()
-            .child("Open Directory")
+            .child("Open Workspace")
             .on_click(cx.listener(|this, _event, _window, cx| {
                 let receiver = cx.prompt_for_paths(PathPromptOptions {
                     files: false,
@@ -148,16 +148,36 @@ impl GitMasterApp {
             .flex_shrink_0()
             .flex_row()
             .items_center()
-            .gap(px(12.0))
-            .p(px(12.0))
+            .gap(px(10.0))
+            .px(px(16.0))
+            .py(px(12.0))
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
-            .border_color(rgb(theme::BG_OVERLAY))
+            .border_color(rgb(theme::BORDER))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.0))
+                    .rounded(px(9.0))
+                    .bg(rgb(theme::ACCENT_SOFT))
+                    .text_color(rgb(theme::ACCENT))
+                    .text_sm()
+                    .child("GM"),
+            )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_grow()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .child("WORKSPACE"),
+                    )
                     .child(div().text_sm().child(dir_label))
                     .children(
                         status_msg

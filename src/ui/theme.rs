@@ -1,12 +1,16 @@
-pub const BG_BASE: u32 = 0x1e1e2e;
-pub const BG_SURFACE: u32 = 0x181825;
-pub const BG_OVERLAY: u32 = 0x313244;
-pub const TEXT_PRIMARY: u32 = 0xcdd6f4;
-pub const TEXT_SUBTLE: u32 = 0xa6adc8;
-pub const ACCENT: u32 = 0x89b4fa;
-pub const GREEN: u32 = 0xa6e3a1;
-pub const RED: u32 = 0xf38ba8;
-pub const YELLOW: u32 = 0xf9e2af;
+pub const BG_BASE: u32 = 0x0a0e16;
+pub const BG_SURFACE: u32 = 0x101725;
+pub const BG_ELEVATED: u32 = 0x172033;
+pub const BG_OVERLAY: u32 = 0x263149;
+pub const BORDER: u32 = 0x263248;
+pub const TEXT_PRIMARY: u32 = 0xe8eef8;
+pub const TEXT_SUBTLE: u32 = 0x91a0b8;
+pub const TEXT_MUTED: u32 = 0x65738b;
+pub const ACCENT: u32 = 0x6ea8fe;
+pub const ACCENT_SOFT: u32 = 0x172b49;
+pub const GREEN: u32 = 0x61d6a3;
+pub const RED: u32 = 0xff748d;
+pub const YELLOW: u32 = 0xf2c76e;
 
 pub fn sync_color(counts: Option<(usize, usize)>) -> u32 {
     match counts {

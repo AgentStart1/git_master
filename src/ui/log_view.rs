@@ -62,6 +62,8 @@ impl GitMasterApp {
                 .map(|remote| {
                     let remote_name = remote.name.clone();
                     let fetch_id = format!("log-remote-{}-fetch", remote.name);
+                    let pull_id = format!("log-remote-{}-pull", remote.name);
+                    let push_id = format!("log-remote-{}-push", remote.name);
                     let reset_id = format!("log-remote-{}-reset", remote.name);
                     let fetch = div()
                         .id(ElementId::Name(fetch_id.clone().into()))
@@ -75,6 +77,42 @@ impl GitMasterApp {
                         .child("Fetch")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.do_fetch_selected_remote(remote_name.clone(), cx);
+                        }));
+                    let remote_name = remote.name.clone();
+                    let pull = div()
+                        .id(ElementId::Name(pull_id.clone().into()))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .bg(rgb(theme::BG_OVERLAY))
+                        .text_xs()
+                        .cursor_pointer()
+                        .child("Pull --rebase")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_log_action(
+                                super::log_actions::LogAction::Pull {
+                                    remote: remote_name.clone(),
+                                },
+                                cx,
+                            );
+                        }));
+                    let remote_name = remote.name.clone();
+                    let push = div()
+                        .id(ElementId::Name(push_id.clone().into()))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(4.0))
+                        .bg(rgb(theme::BG_OVERLAY))
+                        .text_xs()
+                        .cursor_pointer()
+                        .child("Push")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.run_log_action(
+                                super::log_actions::LogAction::Push {
+                                    remote: remote_name.clone(),
+                                },
+                                cx,
+                            );
                         }));
                     let remote_name = remote.name.clone();
                     let reset = div()
@@ -105,6 +143,8 @@ impl GitMasterApp {
                         .bg(rgb(theme::BG_OVERLAY))
                         .child(div().text_xs().child(remote.name.clone()))
                         .child(self.track(&fetch_id, fetch))
+                        .child(self.track(&pull_id, pull))
+                        .child(self.track(&push_id, push))
                         .child(self.track(&reset_id, reset))
                         .into_any_element()
                 })
@@ -156,6 +196,7 @@ impl GitMasterApp {
                             this.toggle_log_branch(branch_name.clone(), cx);
                         }));
                     let checkout_branch = branch.clone();
+                    let delete_branch = branch.clone();
                     div()
                         .flex()
                         .items_center()
@@ -176,6 +217,19 @@ impl GitMasterApp {
                                         ),
                                         cx,
                                     )
+                                }))
+                        }))
+                        .children((branch != &detail.current_branch).then(|| {
+                            div()
+                                .id(ElementId::Name(format!("log-delete-{branch}").into()))
+                                .text_xs()
+                                .text_color(rgb(theme::RED))
+                                .px(px(6.0))
+                                .py(px(4.0))
+                                .cursor_pointer()
+                                .child("Delete")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_delete_branch(delete_branch.clone(), window, cx)
                                 }))
                         }))
                         .into_any_element()
@@ -230,9 +284,7 @@ impl GitMasterApp {
                     .children(remote_controls)
             }));
 
-        let toolbar = toolbar
-            .child(self.render_branch_actions(cx))
-            .child(view_controls);
+        let toolbar = toolbar.child(view_controls);
 
         let body = match self.log_view_mode {
             LogViewMode::List => self.render_log_list(cx),

@@ -1,76 +1,57 @@
 use gpui::*;
 
-use super::{commit_canvas, theme};
-use crate::{
-    app_state::{GitMasterApp, RepoSelection},
-    git_ops,
-};
+use super::commit_canvas;
+use crate::{app_state::GitMasterApp, git_ops};
 
 pub(super) enum LogAction {
     Checkout(String),
-    Pull,
-    Push,
+    Delete(String),
+    Pull { remote: String },
+    Push { remote: String },
 }
 
 impl GitMasterApp {
-    pub(super) fn render_branch_actions(&self, cx: &mut Context<'_, Self>) -> AnyElement {
-        let branch = self
-            .detail
-            .as_ref()
-            .map(|detail| detail.current_branch.clone())
-            .unwrap_or_default();
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .px(px(10.0))
-            .py(px(6.0))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_SUBTLE))
-                    .child(format!("Current: {branch}")),
-            )
-            .child(
-                div()
-                    .id("log-pull")
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(rgb(theme::BG_OVERLAY))
-                    .text_xs()
-                    .cursor_pointer()
-                    .child("Pull --rebase")
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.run_log_action(LogAction::Pull, cx)),
-                    ),
-            )
-            .child(
-                div()
-                    .id("log-push")
-                    .px(px(8.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(rgb(theme::BG_OVERLAY))
-                    .text_xs()
-                    .cursor_pointer()
-                    .child("Push")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.busy || this.loading_detail {
-                            return;
-                        }
-                        if let Some(RepoSelection::Repo(index)) = this.selected {
-                            this.do_push(index, window, cx);
-                        } else {
-                            this.run_log_action(LogAction::Push, cx);
-                        }
-                    })),
-            )
-            .into_any_element()
+    pub(super) fn confirm_delete_branch(
+        &mut self,
+        branch: String,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
+        if self.busy || self.loading_detail {
+            return;
+        }
+        self.busy = true;
+        self.set_status(format!("Confirm deletion of {branch}…"));
+        cx.notify();
+        let entity = cx.entity().downgrade();
+        self.remote_action_prompt_task = Some(window.spawn(cx, async move |cx| {
+            let answer = cx
+                .prompt(
+                    PromptLevel::Critical,
+                    &format!("Delete local branch '{branch}'?"),
+                    Some("Git will refuse to delete the branch if it contains unmerged commits."),
+                    &[
+                        PromptButton::ok("Delete branch"),
+                        PromptButton::cancel("Cancel"),
+                    ],
+                )
+                .await;
+            entity
+                .update(cx, |this, cx| {
+                    if answer == Ok(0) {
+                        this.run_log_action(LogAction::Delete(branch), cx);
+                    } else {
+                        this.busy = false;
+                        this.set_status("Branch deletion cancelled");
+                        cx.notify();
+                    }
+                })
+                .ok();
+        }));
     }
 
     pub(super) fn run_log_action(&mut self, action: LogAction, cx: &mut Context<'_, Self>) {
-        if self.busy || self.loading_detail {
+        if (self.busy && !matches!(action, LogAction::Delete(_))) || self.loading_detail {
             return;
         }
         let Some((index, root, target, selection, submodule)) =
@@ -95,37 +76,56 @@ impl GitMasterApp {
             }
             self.log_visible_branches.insert(branch.clone());
         }
-        let branches = self
+        let deleted_branch = match &action {
+            LogAction::Delete(branch) => Some(branch.clone()),
+            _ => None,
+        };
+        let mut branches = self
             .log_visible_branches
             .iter()
             .cloned()
             .collect::<Vec<_>>();
+        if let Some(branch) = deleted_branch.as_ref() {
+            branches.retain(|candidate| candidate != branch);
+            if branches.is_empty() {
+                branches.push(expected_branch.clone());
+            }
+        }
         self.busy = true;
         self.detail_task = None;
         self.close_context_menu();
         self.set_status(match &action {
             LogAction::Checkout(branch) => format!("Switching to {branch}…"),
-            LogAction::Pull => format!("Pulling {expected_branch}…"),
-            LogAction::Push => format!("Pushing {expected_branch}…"),
+            LogAction::Delete(branch) => format!("Deleting {branch}…"),
+            LogAction::Pull { remote } => {
+                format!("Pulling {remote}/{expected_branch} with rebase…")
+            }
+            LogAction::Push { remote } => format!("Pushing {expected_branch} to {remote}…"),
         });
         cx.notify();
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let expected_target = target.clone();
             let expected_root = root.clone();
+            let operation_branch = expected_branch.clone();
             let (result, refreshed, detail, layout) = cx
                 .background_executor()
                 .spawn(async move {
                     let current =
                         git_ops::get_repo_detail(&target).map(|detail| detail.current_branch);
-                    let result = if current.as_deref() != Some(&expected_branch) {
+                    let result = if current.as_deref() != Some(&operation_branch) {
                         Err("Branch changed; reload the repository before retrying".to_owned())
                     } else {
                         match action {
                             LogAction::Checkout(branch) => {
                                 git_ops::checkout_branch(&target, &branch)
                             }
-                            LogAction::Pull => git_ops::pull_rebase(&target),
-                            LogAction::Push => git_ops::push(&target),
+                            LogAction::Delete(branch) => git_ops::delete_branch(&target, &branch),
+                            LogAction::Pull { remote } => {
+                                git_ops::pull_remote_rebase(&target, &remote, &operation_branch)
+                            }
+                            LogAction::Push { remote } => {
+                                git_ops::push_remote(&target, &remote, &operation_branch)
+                            }
                         }
                     };
                     (
@@ -138,11 +138,18 @@ impl GitMasterApp {
                 .await;
             entity
                 .update(cx, |this, cx| {
+                    let action_succeeded = result.is_ok();
                     this.busy = false;
                     this.set_status(match result {
                         Ok(_) => "Branch operation complete".into(),
                         Err(error) => format!("Branch operation failed: {error}"),
                     });
+                    if action_succeeded && let Some(branch) = deleted_branch {
+                        this.log_visible_branches.remove(&branch);
+                        if this.log_visible_branches.is_empty() {
+                            this.log_visible_branches.insert(expected_branch);
+                        }
+                    }
                     this.apply_repo_refresh(index, &expected_root, refreshed);
                     if this.selected_remote_action_target().is_some_and(
                         |(_, _, path, selected, _)| {

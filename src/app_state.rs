@@ -548,7 +548,6 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    #[::core::prelude::v1::test]
     fn repo_refresh_reconciles_submodule_selection_by_relative_path() {
         let mut app = GitMasterApp::new();
         app.repos = vec![repo(

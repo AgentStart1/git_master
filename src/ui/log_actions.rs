@@ -11,6 +11,16 @@ pub(super) enum LogAction {
 }
 
 impl GitMasterApp {
+    fn delete_confirmation_matches(&self, expected: &(String, String)) -> bool {
+        !self.loading_detail
+            && self
+                .detail
+                .as_ref()
+                .map(|detail| (detail.path.clone(), detail.current_branch.clone()))
+                .as_ref()
+                == Some(expected)
+    }
+
     pub(super) fn confirm_delete_branch(
         &mut self,
         branch: String,
@@ -20,6 +30,13 @@ impl GitMasterApp {
         if self.busy || self.loading_detail {
             return;
         }
+        let Some(expected) = self
+            .detail
+            .as_ref()
+            .map(|detail| (detail.path.clone(), detail.current_branch.clone()))
+        else {
+            return;
+        };
         self.busy = true;
         self.set_status(format!("Confirm deletion of {branch}…"));
         cx.notify();
@@ -38,7 +55,7 @@ impl GitMasterApp {
                 .await;
             entity
                 .update(cx, |this, cx| {
-                    if answer == Ok(0) {
+                    if answer == Ok(0) && this.delete_confirmation_matches(&expected) {
                         this.run_log_action(LogAction::Delete(branch), cx);
                     } else {
                         this.busy = false;
@@ -162,5 +179,40 @@ impl GitMasterApp {
                 })
                 .ok();
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::models::{FileStatusSummary, RepoDetail};
+
+    fn detail(path: &str, branch: &str) -> RepoDetail {
+        RepoDetail {
+            path: path.into(),
+            current_branch: branch.into(),
+            branches: vec![branch.into()],
+            remotes: Vec::new(),
+            head_labels: HashMap::new(),
+            file_status: FileStatusSummary::default(),
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn delete_confirmation_requires_the_original_loaded_repository() {
+        let mut app = GitMasterApp::new();
+        app.detail = Some(detail("/repos/original", "main"));
+        let expected = ("/repos/original".to_string(), "main".to_string());
+
+        assert!(app.delete_confirmation_matches(&expected));
+
+        app.detail = Some(detail("/repos/other", "main"));
+        assert!(!app.delete_confirmation_matches(&expected));
+
+        app.detail = Some(detail("/repos/original", "main"));
+        app.loading_detail = true;
+        assert!(!app.delete_confirmation_matches(&expected));
     }
 }

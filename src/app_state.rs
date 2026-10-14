@@ -58,7 +58,6 @@ pub struct GitMasterApp {
     pub busy: bool,
     pub scan_task: Option<Task<()>>,
     pub detail_task: Option<Task<()>>,
-    pub push_preflight_task: Option<Task<()>>,
     pub remote_action_prompt_task: Option<Task<()>>,
     pub operation_task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
@@ -100,7 +99,6 @@ impl GitMasterApp {
             busy: false,
             scan_task: None,
             detail_task: None,
-            push_preflight_task: None,
             remote_action_prompt_task: None,
             operation_task: None,
             #[cfg(feature = "test-rpc")]
@@ -119,12 +117,6 @@ impl GitMasterApp {
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
         self.close_commit_details();
-        let was_checking_upstream = self.status_message.as_deref() == Some("Checking upstream…");
-        self.push_preflight_task = None;
-        if was_checking_upstream {
-            self.busy = false;
-            self.status_message = None;
-        }
         self.parent_dir = Some(path);
         self.repos.clear();
         self.repo_scroll.set_offset(point(px(0.0), px(0.0)));
@@ -553,20 +545,6 @@ mod tests {
 
         assert_eq!(app.repos[0].name, "current");
         assert_eq!(app.repos[0].path, PathBuf::from("/repos/current"));
-    }
-
-    #[::core::prelude::v1::test]
-    fn begin_scan_cancels_push_preflight() {
-        let mut app = GitMasterApp::new();
-        app.busy = true;
-        app.status_message = Some("Checking upstream…".to_string());
-        app.push_preflight_task = Some(Task::ready(()));
-
-        app.begin_scan(PathBuf::from("/repos/new-parent"));
-
-        assert!(app.push_preflight_task.is_none());
-        assert!(!app.busy);
-        assert!(app.status_message.is_none());
     }
 
     #[::core::prelude::v1::test]

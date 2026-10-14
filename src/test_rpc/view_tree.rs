@@ -395,25 +395,28 @@ impl TestViewTreeSnapshot {
                         detail
                             .branches
                             .iter()
-                            .map(|branch| {
-                                ViewNode::new("button")
-                                    .with_id(&format!("log-branch-{branch}"))
-                                    .with_text(branch)
-                                    .with_interactive()
+                            .flat_map(|branch| {
+                                let mut nodes = vec![
+                                    ViewNode::new("button")
+                                        .with_id(&format!("log-branch-{branch}"))
+                                        .with_text(branch)
+                                        .with_interactive(),
+                                ];
+                                if branch != &detail.current_branch {
+                                    nodes.push(
+                                        ViewNode::new("button")
+                                            .with_id(&format!("log-delete-{branch}"))
+                                            .with_text("Delete")
+                                            .with_interactive(),
+                                    );
+                                }
+                                nodes
                             })
                             .collect(),
                     ),
             );
-            for (id, text) in [("log-pull", "Pull --rebase"), ("log-push", "Push")] {
-                toolbar = toolbar.with_child(
-                    ViewNode::new("button")
-                        .with_id(id)
-                        .with_text(text)
-                        .with_interactive(),
-                );
-            }
             for remote in &detail.remotes {
-                for action in ["fetch", "reset"] {
+                for action in ["fetch", "pull", "push", "reset"] {
                     toolbar = toolbar.with_child(
                         ViewNode::new("button")
                             .with_id(&format!("log-remote-{}-{action}", remote.name))

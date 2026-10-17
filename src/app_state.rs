@@ -13,6 +13,8 @@ use crate::ui::theme;
 pub enum DetailTab {
     Info,
     GitLog,
+    GitChange,
+    GitStash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +34,9 @@ pub struct ContextMenu {
 }
 
 pub struct GitMasterApp {
+    pub worktree: Option<(PathBuf, Result<crate::worktree::Snapshot, String>)>,
+    pub worktree_task: Option<Task<()>>,
+    pub worktree_loading: bool,
     pub selected_commit: Option<(PathBuf, String)>,
     pub commit_text: Option<Result<String, String>>,
     pub commit_task: Option<Task<()>>,
@@ -58,7 +63,6 @@ pub struct GitMasterApp {
     pub busy: bool,
     pub scan_task: Option<Task<()>>,
     pub detail_task: Option<Task<()>>,
-    pub push_preflight_task: Option<Task<()>>,
     pub remote_action_prompt_task: Option<Task<()>>,
     pub operation_task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
@@ -74,6 +78,9 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            worktree: None,
+            worktree_task: None,
+            worktree_loading: false,
             selected_commit: None,
             commit_text: None,
             commit_task: None,
@@ -100,7 +107,6 @@ impl GitMasterApp {
             busy: false,
             scan_task: None,
             detail_task: None,
-            push_preflight_task: None,
             remote_action_prompt_task: None,
             operation_task: None,
             #[cfg(feature = "test-rpc")]
@@ -119,12 +125,6 @@ impl GitMasterApp {
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
         self.close_commit_details();
-        let was_checking_upstream = self.status_message.as_deref() == Some("Checking upstream…");
-        self.push_preflight_task = None;
-        if was_checking_upstream {
-            self.busy = false;
-            self.status_message = None;
-        }
         self.parent_dir = Some(path);
         self.repos.clear();
         self.repo_scroll.set_offset(point(px(0.0), px(0.0)));
@@ -392,6 +392,8 @@ impl GitMasterApp {
                 match tab.as_str() {
                     "info" => self.set_tab(DetailTab::Info),
                     "log" => self.set_tab(DetailTab::GitLog),
+                    "change" => self.set_tab(DetailTab::GitChange),
+                    "stash" => self.set_tab(DetailTab::GitStash),
                     _ => {}
                 }
                 None
@@ -553,20 +555,6 @@ mod tests {
 
         assert_eq!(app.repos[0].name, "current");
         assert_eq!(app.repos[0].path, PathBuf::from("/repos/current"));
-    }
-
-    #[::core::prelude::v1::test]
-    fn begin_scan_cancels_push_preflight() {
-        let mut app = GitMasterApp::new();
-        app.busy = true;
-        app.status_message = Some("Checking upstream…".to_string());
-        app.push_preflight_task = Some(Task::ready(()));
-
-        app.begin_scan(PathBuf::from("/repos/new-parent"));
-
-        assert!(app.push_preflight_task.is_none());
-        assert!(!app.busy);
-        assert!(app.status_message.is_none());
     }
 
     #[::core::prelude::v1::test]

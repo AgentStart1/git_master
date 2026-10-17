@@ -9,6 +9,7 @@ mod repo_actions;
 #[cfg(feature = "test-rpc")]
 mod test_rpc;
 mod ui;
+mod worktree;
 
 use app_state::GitMasterApp;
 use gpui::*;
@@ -108,7 +109,9 @@ fn main() {
 
                         for command in commands {
                             let Ok(request) = entity_watch.update(cx, |this, cx| {
+                                let refresh_worktree = matches!(&command, test_rpc::server::TestCommand::SetTab(tab) if tab == "change" || tab == "stash");
                                 let request = this.prepare_test_command(command);
+                                if refresh_worktree { this.run_worktree(worktree::Action::Refresh, cx); }
                                 if request.is_none() {
                                     this.schedule_test_view_tree_publish(cx);
                                 }

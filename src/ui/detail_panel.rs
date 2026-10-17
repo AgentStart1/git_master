@@ -50,6 +50,8 @@ impl GitMasterApp {
             match self.active_tab {
                 DetailTab::Info => self.render_info_tab(detail).into_any_element(),
                 DetailTab::GitLog => self.render_log_tab(cx),
+                DetailTab::GitChange => self.render_worktree_tab(false, cx),
+                DetailTab::GitStash => self.render_worktree_tab(true, cx),
             }
         } else {
             div()
@@ -104,51 +106,12 @@ impl GitMasterApp {
     }
 
     fn render_tabs(&self, cx: &mut Context<'_, Self>) -> AnyElement {
-        let tab_info = div()
-            .id("tab-info")
-            .px(px(16.0))
-            .py(px(11.0))
-            .cursor_pointer()
-            .border_b_2()
-            .border_color(if self.active_tab == DetailTab::Info {
-                rgb(theme::ACCENT)
-            } else {
-                rgb(theme::BG_SURFACE)
-            })
-            .text_color(if self.active_tab == DetailTab::Info {
-                rgb(theme::TEXT_PRIMARY)
-            } else {
-                rgb(theme::TEXT_SUBTLE)
-            })
-            .text_sm()
-            .child("Overview")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.set_tab(DetailTab::Info);
-                cx.notify();
-            }));
-
-        let tab_log = div()
-            .id("tab-log")
-            .px(px(16.0))
-            .py(px(11.0))
-            .cursor_pointer()
-            .border_b_2()
-            .border_color(if self.active_tab == DetailTab::GitLog {
-                rgb(theme::ACCENT)
-            } else {
-                rgb(theme::BG_SURFACE)
-            })
-            .text_color(if self.active_tab == DetailTab::GitLog {
-                rgb(theme::TEXT_PRIMARY)
-            } else {
-                rgb(theme::TEXT_SUBTLE)
-            })
-            .text_sm()
-            .child("History")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.set_tab(DetailTab::GitLog);
-                cx.notify();
-            }));
+        let tabs = [
+            (DetailTab::Info, "tab-info", "Info"),
+            (DetailTab::GitLog, "tab-log", "Git Log"),
+            (DetailTab::GitChange, "tab-change", "Git Change"),
+            (DetailTab::GitStash, "tab-stash", "Git Stash"),
+        ];
 
         div()
             .flex()
@@ -156,8 +119,34 @@ impl GitMasterApp {
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
             .border_color(rgb(theme::BORDER))
-            .child(self.track("tab-info", tab_info))
-            .child(self.track("tab-log", tab_log))
+            .children(tabs.into_iter().map(|(tab, id, label)| {
+                let element = div()
+                    .id(id)
+                    .px(px(16.0))
+                    .py(px(11.0))
+                    .cursor_pointer()
+                    .border_b_2()
+                    .border_color(rgb(if self.active_tab == tab {
+                        theme::ACCENT
+                    } else {
+                        theme::BG_SURFACE
+                    }))
+                    .text_color(rgb(if self.active_tab == tab {
+                        theme::TEXT_PRIMARY
+                    } else {
+                        theme::TEXT_SUBTLE
+                    }))
+                    .text_sm()
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_tab(tab);
+                        if matches!(tab, DetailTab::GitChange | DetailTab::GitStash) {
+                            this.run_worktree(crate::worktree::Action::Refresh, cx);
+                        }
+                        cx.notify();
+                    }));
+                self.track(id, element)
+            }))
             .into_any_element()
     }
 

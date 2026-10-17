@@ -3,6 +3,9 @@ use std::path::Path;
 use std::process::Command;
 
 #[cfg(test)]
+#[path = "git_action_tests.rs"]
+mod git_action_tests;
+#[cfg(test)]
 #[path = "reset_tests.rs"]
 mod reset_tests;
 
@@ -70,18 +73,6 @@ pub fn list_local_branches(repo_path: &Path) -> Vec<String> {
     branches
 }
 
-pub fn has_upstream(repo_path: &Path, branch_name: &str) -> bool {
-    let repo = match Repository::open(repo_path) {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    let branch = match repo.find_branch(branch_name, BranchType::Local) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    branch.upstream().is_ok()
-}
-
 pub(crate) fn run_git<I, S>(repo_path: &Path, args: I) -> Result<String, String>
 where
     I: IntoIterator<Item = S>,
@@ -138,16 +129,19 @@ pub fn checkout_branch(repo_path: &Path, branch: &str) -> Result<String, String>
     run_git(repo_path, ["checkout", branch])
 }
 
-pub fn pull_rebase(repo_path: &Path) -> Result<String, String> {
-    run_git(repo_path, ["pull", "--rebase"])
+pub fn pull_remote_rebase(repo_path: &Path, remote: &str, branch: &str) -> Result<String, String> {
+    run_git(
+        repo_path,
+        ["pull", "--rebase", "--autostash", "--", remote, branch],
+    )
 }
 
-pub fn push(repo_path: &Path) -> Result<String, String> {
-    run_git(repo_path, ["push"])
+pub fn push_remote(repo_path: &Path, remote: &str, branch: &str) -> Result<String, String> {
+    run_git(repo_path, ["push", "--", remote, branch])
 }
 
-pub fn push_set_upstream(repo_path: &Path, branch: &str) -> Result<String, String> {
-    run_git(repo_path, ["push", "-u", "origin", branch])
+pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<String, String> {
+    run_git(repo_path, ["branch", "--delete", "--", branch])
 }
 
 pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {

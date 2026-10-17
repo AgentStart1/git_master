@@ -351,7 +351,7 @@ impl TestViewTreeSnapshot {
             .with_id("worktree-content")
             .with_child(button("worktree-refresh", "Refresh"));
         if stash {
-            node = node.with_child(button("stash-save", "Stash changes + untracked files"));
+            node = node.with_child(button("stash-save", "Save stash"));
         }
         if self.worktree_loading {
             return node.with_child(ViewNode::new("text").with_text("Loading…"));

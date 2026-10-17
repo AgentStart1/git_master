@@ -18,7 +18,7 @@ pub fn render(rows: &[DiffRow], stash: bool) -> AnyElement {
         .overflow_x_scroll()
         .border_1()
         .border_color(rgb(theme::BORDER))
-        .rounded(px(6.0))
+        .rounded(px(10.0))
         .bg(rgb(theme::BG_SURFACE));
     if rows.is_empty() {
         return pane

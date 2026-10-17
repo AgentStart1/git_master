@@ -66,6 +66,29 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 | P1 | Fetch / Pull / Push | Fetched references without checkout; pull restores autostashed local edits; push reaches local remote; sync counts refresh |
 | P1 | Fetch All / Switch All to Main | Failed remote does not prevent others updating; default branches switch; untracked work survives |
 
+### Coverage audit additions
+
+The suite now has 42 cases: 24 P0 and 18 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+
+| Priority | Previously missing workflow | Assertions |
+|---|---|---|
+| P0 | Push rejection / Pull rebase conflict | Remote and local commits remain recoverable; untracked and unsaved work survives; visible failure |
+| P0 | Multiple and stale stash entries | Apply/Pop/Delete use the selected object ID after indexes shift; missing entries cannot affect replacements |
+| P0 | Stash without identity / locked index | Failure preserves staged and working data; another operation's lock remains untouched; retry works |
+| P0 | Submodule stash isolation | Save/preview/Pop target the selected module; parent work and parent stash remain untouched |
+| P0 | Batch checkout partial failure / missing reset branch | Unsafe target is preserved; other repositories proceed; missing remote branch does not discard commits |
+| P1 | Refresh, empty workspace and clean repository | Disabled batch actions are harmless; external changes update list, sidebar and Info; untracked-only stash preview hides empty sections |
+| P1 | Rename, binary and Unicode files | Preview is readable; Stage/Unstage preserves exact file bytes and correct index paths |
+| P1 | Branch visibility filter | List and graph reflect selection; last visible branch cannot be hidden; HEAD does not change |
+| P1 | Canvas click, node drag, pan and zoom | Click opens details; drag does not; geometry changes; per-repository view state survives switching |
+| P1 | Repository context menu / failed Fetch retry | Menu opens/dismisses without selecting the wrong repository; failure is visible and retry recovers |
+| P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
+| P1 | Native workspace picker (Windows) | Cancel preserves selection; choosing another workspace clears old details and rescans |
+
+The native folder-picker case runs on Windows and is explicitly skipped in Linux CI, which has no desktop portal session. The remaining 41 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, clipboard integration, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
+
+`GIT_MASTER_TEST_CONFIG_DIR` redirects libgit2's system/global/XDG/ProgramData configuration search paths in the test build before threads start. Git subprocesses separately use `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; both configuration readers must be isolated. Production builds do not honor the test-only setting.
+
 ## Test observation and confirmation boundary
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.

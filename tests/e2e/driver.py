@@ -24,6 +24,10 @@ def text(tree):
     return "\n".join(node.get("text", "") for node in walk(tree))
 
 
+def status(tree):
+    return text(find(tree, "status-message") or {})
+
+
 def wait_for(predicate, *, timeout=15, description="condition"):
     deadline = time.monotonic() + timeout
     last = None
@@ -46,8 +50,11 @@ class App:
         with socket.socket() as reserve:
             reserve.bind(("127.0.0.1", 0))
             self.port = reserve.getsockname()[1]
+        config_dir = (artifacts / "git-config").resolve()
+        config_dir.mkdir(exist_ok=True)
         self.proc = subprocess.Popen([str(binary)], env={**env, "GIT_MASTER_OPEN_DIR": str(workspace),
             "GIT_MASTER_RPC_PORT": str(self.port), "GIT_MASTER_TEST_PROMPTS": "1",
+            "GIT_MASTER_TEST_CONFIG_DIR": str(config_dir),
             "LOCALAPPDATA": str((artifacts / "state").resolve())},
             stdout=self.output, stderr=subprocess.STDOUT)
         self.last_tree = None
@@ -139,7 +146,7 @@ class App:
             return tuple(int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
         raise AssertionError("Desktop input currently supports Windows and Linux/X11")
 
-    def click(self, node_id):
+    def point(self, node_id, fraction=(0.5, 0.5)):
         # Importing on Windows sets process DPI awareness before translating coordinates.
         import pyautogui
         pyautogui.PAUSE = 0.05
@@ -148,9 +155,24 @@ class App:
         x, y, width, height = self.window_geometry()
         root = find(tree, "root")["bounds"]
         scale_x, scale_y = width / root["width"], height / root["height"]
-        local_x, local_y = bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+        local_x, local_y = bounds["x"] + bounds["width"] * fraction[0], bounds["y"] + bounds["height"] * fraction[1]
         assert 0 < local_x < root["width"] and 0 < local_y < root["height"], f"{node_id} outside viewport"
-        pyautogui.click(round(x + local_x * scale_x), round(y + local_y * scale_y))
+        return round(x + local_x * scale_x), round(y + local_y * scale_y)
+
+    def click(self, node_id, *, button="left"):
+        import pyautogui
+        pyautogui.click(*self.point(node_id), button=button)
+
+    def drag(self, node_id, dx, dy, *, fraction=(0.5, 0.5)):
+        import pyautogui
+        pyautogui.moveTo(*self.point(node_id, fraction))
+        pyautogui.dragRel(dx, dy, duration=0.4)
+
+    def scroll(self, node_id, steps):
+        import pyautogui
+        pyautogui.moveTo(*self.point(node_id, (0.9, 0.7)))
+        # PyAutoGUI 0.9.54 forwards raw wheel units on Windows; one notch is 120.
+        pyautogui.scroll(steps * 120 if sys.platform == "win32" else steps)
 
     def select(self, index, path):
         self.click(f"repo-{index}")

@@ -17,6 +17,20 @@ use app_state::GitMasterApp;
 use gpui::*;
 
 fn main() {
+    #[cfg(feature = "test-rpc")]
+    if let Some(directory) = std::env::var_os("GIT_MASTER_TEST_CONFIG_DIR") {
+        for level in [
+            git2::ConfigLevel::System,
+            git2::ConfigLevel::Global,
+            git2::ConfigLevel::XDG,
+            git2::ConfigLevel::ProgramData,
+        ] {
+            // libgit2 does not honor Git CLI's GIT_CONFIG_GLOBAL override.
+            // Configure its process-wide paths before starting any UI or worker threads.
+            unsafe { git2::opts::set_search_path(level, std::path::Path::new(&directory)) }
+                .expect("Cannot isolate test Git configuration");
+        }
+    }
     if let Err(error) = operation_log::append("Application started") {
         eprintln!("Cannot initialize operation log: {error}");
     }

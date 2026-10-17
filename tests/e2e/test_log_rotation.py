@@ -95,6 +95,7 @@ def test_missing_new_day_file_then_automatic_writer_uses_new_date(
     app.tab("change")
     app.click("worktree-refresh")
     app.change(repo, "tracked.txt", "stage")
+    logs.window_geometry()  # Return to the native log window before observing its paint.
     tree = ready(logs, "worktree operation=stage END success=true")
     assert log_path(app, tree) == today
     assert "Application started" not in find(tree, "logs-content")["text"]

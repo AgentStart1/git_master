@@ -94,19 +94,31 @@ def test_large_logs_are_bounded_and_really_scroll(app_factory, isolated_git):
     tree = logs.wait(end_visible, "newest log initially followed")
     logs.scroll("logs-content", 100)
     tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "upward wheel pauses follow")
-    before = find(tree, "logs-end")["bounds"]["y"]
+    before = anchor(tree)[0]
     for _ in range(25):
         if end_visible(tree):
             break
-        previous_y = find(tree, "logs-end")["bounds"]["y"]
+        previous_index = anchor(tree)[0]
         # Keep each native wheel event within Windows' signed 16-bit delta.
         logs.scroll("logs-content", -100)
-        tree = logs.wait(lambda t: find(t, "logs-end")["bounds"]["y"] < previous_y,
+        tree = logs.wait(lambda t: end_visible(t) or anchor(t)[0] > previous_index,
             "log viewport moved after wheel input")
     assert end_visible(tree), "final log entry must be painted inside viewport"
-    assert find(tree, "logs-end")["bounds"]["y"] < before
+    assert anchor(tree)[0] > before
     assert text(find(tree, "logs-end")) == marker
     screenshot(logs, "application-logs-scrolled.png")
+
+
+def anchor(tree):
+    node = find(tree, "logs-visible-anchor")
+    assert node and node.get("bounds"), "a real fully visible log row must be painted"
+    return node["state"]["index"], node["text"], node["bounds"]["y"]
+
+
+def assert_same_anchor(tree, previous):
+    current = anchor(tree)
+    assert current[:2] == previous[:2], "the same displayed row must remain visible"
+    assert abs(current[2] - previous[2]) < 1, "the paused painted row must not move"
 
 
 def end_visible(tree):
@@ -196,13 +208,13 @@ def test_logs_auto_refresh_follow_pause_and_resume(app_factory, isolated_git):
     logs.scroll("logs-content", 20)
     tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "manual upward scroll pauses following")
     original = find(tree, "logs-content")["text"]
-    original_y = find(tree, "logs-end")["bounds"]["y"]
+    original_anchor = anchor(tree)
     completed = log_state(tree)["completed_reads"]
     next_marker = "PAUSED_APPEND_" + uuid.uuid4().hex
     append_lines(path, next_marker + "\n")
     tree = logs.wait(lambda t: log_state(t)["pending"] and log_state(t)["completed_reads"] > completed, "new logs read while follow paused")
     assert find(tree, "logs-content")["text"] == original
-    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    assert_same_anchor(tree, original_anchor)
     screenshot(logs, "logs-follow-paused.png")
     logs.click("logs-follow")
     tree = ready(logs, next_marker)
@@ -231,12 +243,12 @@ def test_paused_logs_keep_position_when_bounded_tail_rolls(app_factory, isolated
     logs.scroll("logs-content", 30)
     tree = logs.wait(lambda t: not log_state(t)["following"], "paused bounded tail")
     original = find(tree, "logs-content")["text"]
-    original_y = find(tree, "logs-end")["bounds"]["y"]
+    original_anchor = anchor(tree)
     completed = log_state(tree)["completed_reads"]
     append_lines(path, "".join(f"ROLLED_{prefix}_{i}\n" for i in range(2200)))
     tree = logs.wait(lambda t: log_state(t)["pending"] and log_state(t)["completed_reads"] > completed, "rolled tail buffered")
     assert find(tree, "logs-content")["text"] == original
-    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    assert_same_anchor(tree, original_anchor)
     logs.click("logs-follow")
     tree = ready(logs, f"ROLLED_{prefix}_2199")
     tree = logs.wait(end_visible, "latest rolled tail followed")
@@ -290,7 +302,7 @@ def test_paused_read_errors_preserve_content_and_viewport(app_factory, isolated_
     logs.scroll("logs-content", 20)
     tree = logs.wait(lambda t: not log_state(t)["following"], "reading paused before failure")
     original = find(tree, "logs-content")["text"]
-    original_y = find(tree, "logs-end")["bounds"]["y"]
+    original_anchor = anchor(tree)
     backup = path.with_suffix(".saved")
     gate.mkdir()
     try:
@@ -304,7 +316,7 @@ def test_paused_read_errors_preserve_content_and_viewport(app_factory, isolated_
         tree = logs.wait(lambda t: log_state(t)["completed_reads"] >= completed + (2 if manual else 1), "failed reads completed")
         screenshot(logs, f"paused-{manual}-read-error.png")
         assert find(tree, "logs-content")["text"] == original, "read errors must retain the paused snapshot"
-        assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1, "error feedback must not move the paused viewport"
+        assert_same_anchor(tree, original_anchor)
         assert not log_state(tree)["following"]
         assert find(tree, "logs-refresh-error")["bounds"]["height"] <= 24
     finally:
@@ -317,7 +329,7 @@ def test_paused_read_errors_preserve_content_and_viewport(app_factory, isolated_
     append_lines(path, resumed + "\n")
     tree = logs.wait(lambda t: log_state(t)["refresh_error"] is None and log_state(t)["pending"], "failed paused read recovers into buffer")
     assert find(tree, "logs-content")["text"] == original
-    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    assert_same_anchor(tree, original_anchor)
     logs.click("logs-follow")
     ready(logs, resumed)
     logs.wait(end_visible, "recovered pending logs followed")
@@ -418,12 +430,12 @@ def test_queued_manual_refresh_is_serial_and_inflight_result_obeys_pause(app_fac
     logs.wait(end_visible, "first result followed before pausing inflight refresh")
     logs.scroll("logs-content", 20)
     tree = logs.wait(lambda t: not log_state(t)["following"], "pause after second snapshot captured")
-    original_y = find(tree, "logs-end")["bounds"]["y"]
+    original_anchor = anchor(tree)
     result_gate.release(2)
     tree = logs.wait(lambda t: log_state(t)["completed_reads"] >= baseline + 2 and log_state(t)["pending"], "inflight queued result buffered using current follow state")
     assert find(tree, "logs-content")["text"].endswith(first)
     assert second not in find(tree, "logs-content")["text"]
-    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    assert_same_anchor(tree, original_anchor)
     logs.click("logs-follow")
     ready(logs, second)
     logs.wait(end_visible, "queued result followed after explicit resume")

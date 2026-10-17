@@ -9,7 +9,7 @@ pub struct Snapshot {
     pub path: PathBuf,
     pub text: String,
     pub truncated: bool,
-    pub rows: Vec<String>,
+    pub rows: std::sync::Arc<[String]>,
 }
 
 impl Snapshot {
@@ -34,7 +34,7 @@ impl Snapshot {
             path,
             text,
             truncated,
-            rows,
+            rows: rows.into(),
         }
     }
 }

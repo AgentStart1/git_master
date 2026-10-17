@@ -6,7 +6,8 @@ use crate::log_viewer::{LogViewerHost, State, Viewer};
 
 pub struct LogsWindow {
     viewer: Viewer,
-    scroll: ScrollHandle,
+    scroll: ListState,
+    rows: std::sync::Arc<[String]>,
     reading: bool,
     manual_requested: bool,
     completed_reads: u64,
@@ -79,7 +80,8 @@ impl GitMasterApp {
                     .detach();
                     let mut view = LogsWindow {
                         viewer: Viewer::new(),
-                        scroll: ScrollHandle::new(),
+                        scroll: ListState::new(1, ListAlignment::Top, px(100.0)),
+                        rows: vec![String::new()].into(),
                         reading: false,
                         manual_requested: false,
                         completed_reads: 0,
@@ -271,22 +273,34 @@ impl LogsWindow {
                 ),
             );
         }
-        let text = state.display_text();
         let (notice, color) = match state {
             State::Loading => (None, theme::TEXT_SUBTLE),
             State::Failed(_) => (None, theme::RED),
             State::Ready(snapshot) => (snapshot.truncated.then_some(
                 "Showing the latest 2,000 lines, up to 256 KiB. Older entries remain in the log file."), theme::TEXT_SUBTLE),
         };
-        let fallback;
-        let rows = match state {
-            State::Ready(snapshot) if !snapshot.text.is_empty() => &snapshot.rows,
-            _ => {
-                fallback = vec![text.to_owned()];
-                &fallback
+        let rows = self.rows.clone();
+        #[cfg(feature = "test-rpc")]
+        let registry = self.bounds_registry.clone();
+        let content = list(self.scroll.clone(), move |index, _, _| {
+            let row = div()
+                .min_h(px(19.2))
+                .flex_shrink_0()
+                .child(rows[index].clone());
+            #[cfg(feature = "test-rpc")]
+            {
+                let row =
+                    crate::test_rpc::tracked::tracked(&format!("logs-row-{index}"), row, &registry);
+                if index + 1 == rows.len() {
+                    return crate::test_rpc::tracked::tracked("logs-end", row, &registry)
+                        .into_any_element();
+                }
+                row.into_any_element()
             }
-        };
-        let (last, body) = rows.split_last().expect("log display has at least one row");
+            #[cfg(not(feature = "test-rpc"))]
+            row.into_any_element()
+        })
+        .size_full();
         self.track(
             "logs-panel",
             div()
@@ -348,9 +362,7 @@ impl LogsWindow {
                             .id("logs-content")
                             .flex_1()
                             .min_h(px(0.0))
-                            .overflow_y_scroll()
-                            .overflow_x_scroll()
-                            .track_scroll(&self.scroll)
+                            .overflow_hidden()
                             .on_scroll_wheel(cx.listener(
                                 |this, event: &ScrollWheelEvent, window, cx| {
                                     let delta = event.delta.pixel_delta(px(16.0)).y;
@@ -360,8 +372,8 @@ impl LogsWindow {
                                     } else if delta < px(0.0) {
                                         // Read the handle after GPUI's default wheel listener moves it.
                                         cx.defer_in(window, |this, _, cx| {
-                                            if this.scroll.max_offset().height
-                                                + this.scroll.offset().y
+                                            if this.scroll.max_offset_for_scrollbar().height
+                                                + this.scroll.scroll_px_offset_for_scrollbar().y
                                                 <= px(2.0)
                                             {
                                                 this.viewer.resume();
@@ -388,13 +400,7 @@ impl LogsWindow {
                             .text_xs()
                             .line_height(px(19.2))
                             .text_color(rgb(color))
-                            .children(body.iter().map(|row| {
-                                div().min_h(px(19.2)).flex_shrink_0().child(row.clone())
-                            }))
-                            .child(self.track(
-                                "logs-end",
-                                div().min_h(px(19.2)).flex_shrink_0().child(last.clone()),
-                            )),
+                            .child(content),
                     ),
                 ),
         )
@@ -406,8 +412,22 @@ impl Render for LogsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         #[cfg(feature = "test-rpc")]
         self.bounds_registry.borrow_mut().clear();
+        let rows = match &self.viewer.state {
+            State::Ready(snapshot) if !snapshot.text.is_empty() => snapshot.rows.clone(),
+            state if self.rows.len() == 1 && self.rows[0] == state.display_text() => {
+                self.rows.clone()
+            }
+            state => vec![state.display_text().to_owned()].into(),
+        };
+        if !std::sync::Arc::ptr_eq(&rows, &self.rows) {
+            self.scroll.reset(rows.len());
+            self.rows = rows;
+        }
         if self.viewer.following {
-            self.scroll.scroll_to_bottom();
+            self.scroll.scroll_to(ListOffset {
+                item_ix: self.rows.len(),
+                offset_in_item: px(0.0),
+            });
         }
         let panel = div()
             .size_full()

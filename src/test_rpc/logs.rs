@@ -71,6 +71,33 @@ pub fn build_tree(
         );
     }
 
+    if let Some(viewport) = reg.get("logs-content") {
+        let anchor = reg
+            .iter()
+            .filter_map(|(id, bounds)| {
+                let index = id.strip_prefix("logs-row-")?.parse::<usize>().ok()?;
+                (bounds.origin.y >= viewport.origin.y && bounds.bottom() <= viewport.bottom())
+                    .then_some((index, bounds))
+            })
+            .min_by_key(|(index, _)| *index);
+        if let Some((index, bounds)) = anchor {
+            let row = match state {
+                State::Ready(snapshot) if !snapshot.text.is_empty() => snapshot
+                    .rows
+                    .get(index)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                _ => message,
+            };
+            let mut node = ViewNode::new("text")
+                .with_id("logs-visible-anchor")
+                .with_text(row)
+                .with_state(serde_json::json!({"index":index}));
+            node.bounds = Some(Rect::from_gpui(bounds));
+            panel = panel.with_child(node);
+        }
+    }
+
     if let Some(state) = &mut panel.state {
         state["following"] = serde_json::json!(viewer.following);
         state["pending"] = serde_json::json!(viewer.pending.is_some());
@@ -80,6 +107,12 @@ pub fn build_tree(
         state["active_read"] = serde_json::json!(observation.active_read);
         state["active_read_manual"] = serde_json::json!(observation.active_read_manual);
         state["manual_queued"] = serde_json::json!(observation.manual_queued);
+        state["painted_rows"] =
+            serde_json::json!(reg.keys().filter(|id| id.starts_with("logs-row-")).count());
+        state["display_rows"] = serde_json::json!(match &viewer.state {
+            State::Ready(snapshot) if !snapshot.text.is_empty() => snapshot.rows.len(),
+            _ => 1,
+        });
     }
 
     fn attach(node: &mut ViewNode, reg: &HashMap<String, Bounds<Pixels>>) {

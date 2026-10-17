@@ -3,7 +3,7 @@ import uuid
 import pytest
 from driver import find
 from test_logs import (setup, open_logs, ready, log_path, log_state, end_visible,
-                       result_gate)
+                       result_gate, anchor, assert_same_anchor)
 from test_task_status import screenshot
 
 
@@ -33,11 +33,13 @@ def test_rotation_replaces_the_tail_and_preserves_follow_mode(
     tree = ready(logs, f"OLD_{prefix}_2999")
     logs.wait(end_visible, "old truncated tail is followed")
     assert log_state(tree)["truncated"]
+    assert log_state(tree)["display_rows"] >= 1000
+    assert 0 < log_state(tree)["painted_rows"] < 100, "large logs must not lay out every retained row"
     if paused:
         logs.scroll("logs-content", 30)
         tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "paused before rotation")
     original = find(tree, "logs-content")["text"]
-    original_y = find(tree, "logs-end")["bounds"]["y"]
+    original_anchor = anchor(tree)
     result_gate.arm(1, 2, 3)
     result_gate.entered(1)  # A captured pre-rotation result must publish first.
     baseline = log_state(logs.tree())["completed_reads"]
@@ -60,7 +62,7 @@ def test_rotation_replaces_the_tail_and_preserves_follow_mode(
         assert log_state(tree)["pending"]
         assert log_path(app, tree) == path
         assert find(tree, "logs-content")["text"] == original
-        assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+        assert_same_anchor(tree, original_anchor)
         logs.click("logs-follow")
         tree = logs.wait(lambda t: log_state(t)["following"], "resume buffered replacement")
     assert find(tree, "logs-content")["text"] == replacement
@@ -105,8 +107,9 @@ def test_missing_new_day_file_then_automatic_writer_uses_new_date(
 
 
 @pytest.mark.p1
-def test_oversized_unicode_final_entry_remains_readable_and_followed(
-        app_factory, isolated_git, result_gate):
+@pytest.mark.parametrize("character,count", [("中", 100_000), ("x", 300_000)], ids=["unicode", "ascii"])
+def test_oversized_final_entry_remains_readable_and_followed(
+        app_factory, isolated_git, result_gate, character, count):
     app, _ = setup(app_factory, isolated_git)
     logs = open_logs(app)
     tree = ready(logs, "Application started")
@@ -115,7 +118,7 @@ def test_oversized_unicode_final_entry_remains_readable_and_followed(
     result_gate.entered(1)
     baseline = log_state(logs.tree())["completed_reads"]
     marker = "LONG_END_" + uuid.uuid4().hex
-    data = "old\n" + "中" * 100_000 + marker + "\n"
+    data = "old\n" + character * count + marker + "\n"
     path.write_bytes(data.encode("utf-8"))
     # Independently compute the exact suffix on UTF-8 scalar boundaries.
     expected = data.encode("utf-8")[-256 * 1024:].decode("utf-8", errors="ignore").rstrip("\n")
@@ -127,6 +130,10 @@ def test_oversized_unicode_final_entry_remains_readable_and_followed(
     assert log_state(tree)["truncated"]
     assert log_state(tree)["following"]
     assert find(tree, "logs-copy")["interactive"]
+    root = find(tree, "logs-root")["bounds"]
+    for identifier in ("logs-follow", "logs-refresh", "logs-copy", "logs-close", "logs-content"):
+        bounds = find(tree, identifier)["bounds"]
+        assert 0 <= bounds["y"] < bounds["y"] + bounds["height"] <= root["height"], identifier
     def final_wrapped_row_visible(t):
         viewport = find(t, "logs-content")["bounds"]
         entry = find(t, "logs-end")["bounds"]

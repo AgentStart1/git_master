@@ -113,6 +113,7 @@ pub struct TestViewTreeSnapshot {
     context_menu: Option<ContextMenu>,
     status_message: Option<String>,
     status_expanded: bool,
+    status_summary: Option<String>,
     status_revision: u64,
     view_revision: u64,
     worktree: Option<(
@@ -145,6 +146,7 @@ impl GitMasterApp {
             context_menu: self.context_menu.clone(),
             status_message: self.status_message.clone(),
             status_expanded: self.status_expanded,
+            status_summary: self.task_status_summary(),
             status_revision: self.status_revision,
             view_revision: self.test_view_revision,
             worktree: self.worktree.clone(),
@@ -269,18 +271,34 @@ impl TestViewTreeSnapshot {
                 );
             }
         }
-        bar = bar.with_child(
-            ViewNode::new("text")
-                .with_id("status-summary")
-                .with_bounds_from(reg, "status-summary"),
-        );
+        if let Some(summary) = &self.status_summary {
+            bar = bar.with_child(
+                ViewNode::new("text")
+                    .with_id("status-summary")
+                    .with_text(summary)
+                    .with_bounds_from(reg, "status-summary"),
+            );
+        }
         if self.status_expanded {
             bar = bar.with_child(
                 ViewNode::new("panel")
                     .with_id("status-details")
                     .with_interactive()
                     .with_text(self.status_message.as_deref().unwrap_or_default())
-                    .with_bounds_from(reg, "status-details"),
+                    .with_bounds_from(reg, "status-details")
+                    .with_child(
+                        ViewNode::new("text")
+                            .with_id("status-detail-end")
+                            .with_text(
+                                self.status_message
+                                    .as_deref()
+                                    .unwrap_or_default()
+                                    .rsplit('\n')
+                                    .next()
+                                    .unwrap_or_default(),
+                            )
+                            .with_bounds_from(reg, "status-detail-end"),
+                    ),
             );
         }
 

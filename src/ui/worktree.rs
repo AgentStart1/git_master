@@ -20,6 +20,7 @@ impl GitMasterApp {
 
     fn start_worktree(&mut self, action: Action, report_status: bool, cx: &mut Context<'_, Self>) {
         let mutating = action.mutates();
+        let report_status = report_status && !self.busy;
         if (self.busy && mutating) || self.loading_detail {
             return;
         }
@@ -34,6 +35,10 @@ impl GitMasterApp {
         self.worktree_revision += 1;
         let revision = self.worktree_revision;
         self.worktree_loading = true;
+        // Concurrent reads must preserve a running mutation's progress and outcome.
+        if report_status {
+            self.set_status(action.progress_message());
+        }
         if mutating {
             self.busy = true;
         }
@@ -123,6 +128,7 @@ impl GitMasterApp {
             return;
         };
         self.busy = true;
+        self.set_status("Confirm stash deletion…");
         cx.notify();
         let entity = cx.entity().downgrade();
         self.remote_action_prompt_task = Some(window.spawn(cx, async move |cx| {

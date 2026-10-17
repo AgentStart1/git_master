@@ -113,6 +113,8 @@ class App:
             user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
             user32.IsWindowVisible.argtypes = [wintypes.HWND]
             user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, wintypes.UINT]
             user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
             user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
             candidates = []
@@ -131,6 +133,23 @@ class App:
                 pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
                 return pid.value == self.proc.pid
+            if not focused():
+                # Windows can reject programmatic activation from a background runner.
+                # Raise only our window, then activate it with a real click on its header.
+                import pyautogui
+                assert user32.SetWindowPos(self.window, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+                try:
+                    header = wintypes.POINT(20, 20)
+                    assert user32.ClientToScreen(self.window, ctypes.byref(header))
+                    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+                    user32.WindowFromPoint.restype = wintypes.HWND
+                    target = user32.WindowFromPoint(header)
+                    target_pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(target, ctypes.byref(target_pid))
+                    assert target_pid.value == self.proc.pid, "activation point must belong to test process"
+                    pyautogui.click(header.x, header.y)
+                finally:
+                    user32.SetWindowPos(self.window, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             wait_for(focused, timeout=3, description="test window foreground")
             rect, origin = wintypes.RECT(), wintypes.POINT(0, 0)
             assert user32.GetClientRect(self.window, ctypes.byref(rect))

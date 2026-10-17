@@ -205,8 +205,7 @@ impl GitMasterApp {
 }
 
 impl GitMasterApp {
-    fn render_task_status(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
-        let running = self.busy || self.scanning || self.loading_detail || self.worktree_loading;
+    pub(crate) fn task_status_summary(&self) -> Option<String> {
         let message = if self.busy {
             self.status_message.as_deref().unwrap_or("Working…")
         } else if self.scanning {
@@ -218,13 +217,20 @@ impl GitMasterApp {
         } else {
             self.status_message.as_deref()?
         };
-        let summary: String = message
-            .lines()
-            .next()
-            .unwrap_or("Task completed")
-            .chars()
-            .take(180)
-            .collect();
+        Some(
+            message
+                .lines()
+                .next()
+                .unwrap_or("Task completed")
+                .chars()
+                .take(180)
+                .collect(),
+        )
+    }
+
+    fn render_task_status(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let running = self.busy || self.scanning || self.loading_detail || self.worktree_loading;
+        let summary = self.task_status_summary()?;
         let normalized = summary.to_ascii_lowercase();
         let failed =
             if normalized.starts_with("fetch all:") || normalized.starts_with("switch to main:") {
@@ -356,7 +362,27 @@ impl GitMasterApp {
                         })
                         .text_xs()
                         .text_color(rgb(theme::TEXT_SUBTLE))
-                        .child(message.clone()),
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div().flex_shrink_0().child(
+                                message
+                                    .rsplit_once('\n')
+                                    .map_or("", |(body, _)| body)
+                                    .to_owned(),
+                            ),
+                        )
+                        .child(
+                            self.track(
+                                "status-detail-end",
+                                div().flex_shrink_0().child(
+                                    message
+                                        .rsplit_once('\n')
+                                        .map_or(message.as_str(), |(_, end)| end)
+                                        .to_owned(),
+                                ),
+                            ),
+                        ),
                 ),
             );
         }

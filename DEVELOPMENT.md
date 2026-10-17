@@ -68,7 +68,7 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 
 ### Coverage audit additions
 
-The suite now has 53 cases: 26 P0 and 27 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+The suite now has 65 cases: 26 P0 and 39 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
 
 | Priority | Previously missing workflow | Assertions |
 |---|---|---|
@@ -109,7 +109,7 @@ Selection and workspace transitions invalidate read-request ownership. A complet
 
 Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmation and cancellation both have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
 
-Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 53 desktop E2E cases and also run in CI.
+Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 65 desktop E2E cases and also run in CI.
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 
@@ -121,4 +121,10 @@ For portable confirmation testing, `GIT_MASTER_TEST_PROMPTS=1` installs a custom
 
 CI builds the application on Linux, Windows, and macOS. The E2E job also executes the Rust regression suite and driver acknowledgement checks, then runs desktop pytest cases serially under Linux Xvfb and uploads JUnit, application logs, failure trees, and screenshots even after a test failure. Local Windows runs exercise the same tests on a real desktop. No network credentials or external Git hosting are needed by the tests.
 
-The task feedback regression holds a real Push at a Git hook, then rejects another Push with 120 diagnostic lines. It verifies compact and expanded panel bounds, remaining content height, automatic collapse on completion, full clipboard output, and remote Git state. Passing screenshots are saved in that case's artifact directory.
+The task feedback regression holds a real Push at a Git hook, then rejects another Push with 120 diagnostic lines. It verifies compact and expanded panel bounds, remaining content height, automatic collapse on completion, full clipboard output, and remote Git state. The final diagnostic line has real painted bounds: it must begin outside the details viewport and move fully inside it after a wheel scroll. Screenshots alone are not accepted as scroll assertions. Passing screenshots are saved in that case's artifact directory.
+
+Twelve task-progress cases hold Stage, Unstage, Save, Apply, Pop and Drop on their actual worker boundary, each after a previous success and a recoverable failure. They assert the text of the painted summary, a fresh status revision, collapsed old details, and the final Git/index/file state. `GIT_MASTER_TEST_WORKTREE_GATE` names a test-only gate directory; creating it arms the gate, `entered` acknowledges worker arrival, and `release` resumes it (bounded to 30 seconds). Concurrent reads retain the running mutation's status. The shared worker gate also preserves the existing scan cancellation boundary.
+
+On Windows, if foreground activation is denied, the driver temporarily raises only its own window and clicks a safe header point after verifying that point belongs to the test process; it then restores normal stacking. It never clicks another application's window to obtain focus.
+
+Mutation verification: removing the worktree start-status update makes the Stage-after-failure case reject the stale error summary; disabling vertical scrolling makes the long-error case time out waiting for the painted final line to enter the viewport. Both mutations were verified to fail before restoring the fixes. Async navigation tests wait for the painted busy/status frame before resolving repository-row coordinates, and assert that concurrent Change/Stash reads preserve the active Push summary.

@@ -36,6 +36,20 @@ pub enum Action {
     ShowStash(Oid),
 }
 impl Action {
+    pub fn progress_message(&self) -> String {
+        match self {
+            Self::Refresh => "Reading repository changes and stashes…".into(),
+            Self::Diff(path) => format!("Loading diff for {}…", path.display()),
+            Self::Stage(path) => format!("Staging {}…", path.display()),
+            Self::Unstage(path) => format!("Unstaging {}…", path.display()),
+            Self::SaveStash => "Saving stash…".into(),
+            Self::Apply(_) => "Applying stash…".into(),
+            Self::Pop(_) => "Popping stash…".into(),
+            Self::Drop(_) => "Deleting stash…".into(),
+            Self::ShowStash(_) => "Loading stash changes…".into(),
+        }
+    }
+
     pub fn mutates(&self) -> bool {
         !matches!(self, Self::Refresh | Self::Diff(_) | Self::ShowStash(_))
     }
@@ -72,6 +86,10 @@ impl WorktreeHost {
         let started = std::time::Instant::now();
         if self.action.mutates() {
             let _ = crate::operation_log::append(&format!("worktree operation={operation} START"));
+        }
+        #[cfg(feature = "test-rpc")]
+        if self.action.mutates() {
+            crate::test_rpc::worker_gate::wait("GIT_MASTER_TEST_WORKTREE_GATE");
         }
         let result = execute_document(&self.path, &self.action, renderer);
         if self.action.mutates() {

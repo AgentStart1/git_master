@@ -31,6 +31,10 @@ def gate(isolated_git, monkeypatch):
 
 
 def select_while_busy(app, index, path):
+    # The status strip changes row positions when a mutation starts. Resolve
+    # coordinates only after that busy frame has actually been painted.
+    app.wait(lambda t: t["state"]["busy"] and find(t, "status-summary") and
+        find(t, "status-summary").get("bounds"), "mutation progress painted before navigation")
     app.click(f"repo-{index}")
     app.wait(lambda t: not t["state"]["loading_detail"] and t["state"].get("path") and
         Path(t["state"]["path"]).resolve() == path.resolve(), "new repository loaded during operation")
@@ -61,6 +65,7 @@ def test_other_repository_can_load_changes_while_push_is_pending(app_factory, is
     app.wait(lambda t: not t["state"]["worktree_loading"] and expected in text(find(t, "worktree-content") or {}),
         "new repository tab loads before old push completes")
     assert app.tree()["state"]["busy"]
+    assert text(find(app.tree(), "status-summary")) == "Pushing main to origin…"
     gate.release()
     app.wait_completion(revision)
     assert Path(app.tree()["state"]["path"]).resolve() == other.resolve()

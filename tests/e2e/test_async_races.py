@@ -148,6 +148,7 @@ def test_submodule_init_completion_does_not_open_other_parents_same_relative_pat
     app.wait(lambda t: find(t, "submodule-info-content"), "first uninitialized module")
     app.click("init-submodule-btn", await_operation=False)
     gate.entered()
+    app.wait(lambda t: t["state"]["busy"] and "Initializing" in status(t), "initialization busy frame painted")
     revision = app.tree()["state"]["status_revision"]
     app.click("repo-1-toggle")
     app.click("repo-1-submodule-0")

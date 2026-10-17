@@ -140,7 +140,7 @@ def test_canvas_click_drag_pan_zoom_and_per_repo_view_state(app_factory, isolate
 
 
 @pytest.mark.p1
-def test_context_menu_dismissal_does_not_select_underlying_repo(app_factory, isolated_git):
+def test_context_menu_right_click_preserves_selection_and_outside_click_recovers(app_factory, isolated_git):
     root = isolated_git / "workspace"
     first, second = make_repo(root / "alpha"), make_repo(root / "beta")
     app = app_factory(root)
@@ -151,7 +151,8 @@ def test_context_menu_dismissal_does_not_select_underlying_repo(app_factory, iso
         assert find(app.tree(), node_id)["interactive"]
     assert app.tree()["state"]["path"] == str(first)
     app.click("repo-0")
-    app.wait(lambda t: not find(t, "context-menu"), "dismissed context menu")
+    app.wait(lambda t: app.idle(t) and not find(t, "context-menu") and t["state"]["path"] == str(first),
+        "dismissed context menu and completed clicked repository reload")
     assert app.tree()["state"]["path"] == str(first)
     app.select(1, second)
 

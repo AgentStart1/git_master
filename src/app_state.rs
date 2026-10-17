@@ -484,9 +484,6 @@ impl Render for GitMasterApp {
         #[cfg(feature = "test-rpc")]
         {
             self.bounds_registry.borrow_mut().clear();
-            cx.on_next_frame(window, |this, _window, cx| {
-                this.schedule_test_view_tree_publish(cx);
-            });
         }
 
         let top_bar = self.render_top_bar(window, cx);
@@ -514,6 +511,18 @@ impl Render for GitMasterApp {
             .child(main_content)
             .children(context_menu.map(|m| self.track("context-menu", m)));
 
+        #[cfg(feature = "test-rpc")]
+        {
+            let entity = cx.entity();
+            // Publish after this frame's prepaint has recorded all control bounds.
+            // An idle X11 window may never deliver a subsequent frame callback.
+            crate::test_rpc::tracked::tracked("root", root, &self.bounds_registry)
+                .after_paint(move |cx| {
+                    entity.update(cx, |this, cx| this.schedule_test_view_tree_publish(cx));
+                })
+                .into_any_element()
+        }
+        #[cfg(not(feature = "test-rpc"))]
         self.track("root", root)
     }
 }

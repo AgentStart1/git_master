@@ -65,7 +65,7 @@ jobs:
           sudo apt-get install -y \
             libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libvulkan-dev libwayland-dev libfontconfig-dev mesa-vulkan-drivers \
-            xvfb xauth xdotool scrot python3-tk
+            xvfb xauth xdotool scrot gnome-screenshot python3-tk
 
       - uses: actions/setup-python@v7
         with:

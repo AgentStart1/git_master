@@ -10,6 +10,7 @@ pub struct Tracked {
     track_id: String,
     inner: AnyElement,
     registry: BoundsRegistry,
+    after_paint: Option<Box<dyn FnOnce(&mut App)>>,
 }
 
 pub fn tracked(id: &str, element: impl IntoElement, registry: &BoundsRegistry) -> Tracked {
@@ -17,6 +18,14 @@ pub fn tracked(id: &str, element: impl IntoElement, registry: &BoundsRegistry) -
         track_id: id.to_string(),
         inner: element.into_any_element(),
         registry: registry.clone(),
+        after_paint: None,
+    }
+}
+
+impl Tracked {
+    pub fn after_paint(mut self, callback: impl FnOnce(&mut App) + 'static) -> Self {
+        self.after_paint = Some(Box::new(callback));
+        self
     }
 }
 
@@ -76,5 +85,8 @@ impl Element for Tracked {
         cx: &mut App,
     ) {
         self.inner.paint(window, cx);
+        if let Some(callback) = self.after_paint.take() {
+            cx.defer(callback);
+        }
     }
 }

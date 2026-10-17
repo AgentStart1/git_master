@@ -30,7 +30,7 @@ python -m pytest tests/e2e -v --junitxml=test-results/e2e.xml
 
 The suite builds a dedicated `git_master_e2e.exe` once, leaving an already running development executable alone. It moves the mouse and brings its own application windows to the foreground. Avoid interacting with the desktop during the run. Run tests serially; do not use pytest-xdist against a shared desktop.
 
-On Linux/X11 install the GPUI build dependencies plus `xvfb`, `xauth`, `xdotool`, `scrot`, and `python3-tk`, then run:
+On Linux/X11 install the GPUI build dependencies plus `xvfb`, `xauth`, `xdotool`, `scrot`, `gnome-screenshot`, and `python3-tk`, then run:
 
 ```sh
 xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e -v --junitxml=test-results/e2e.xml

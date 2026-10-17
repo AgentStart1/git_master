@@ -173,6 +173,9 @@ class App:
                 windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
             assert len(windows) == 1, windows
             self.window = windows[0]
+            # Xvfb has no window manager: focusing alone leaves another native
+            # window above this one, so clicks can land in the Logs window.
+            xdo("windowraise", self.window)
             xdo("windowfocus", self.window)
             values = dict(line.split("=", 1) for line in xdo("getwindowgeometry", "--shell", self.window).splitlines() if "=" in line)
             return tuple(int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))

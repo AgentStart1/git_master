@@ -66,7 +66,7 @@ jobs:
           sudo apt-get install -y \
             libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libvulkan-dev libwayland-dev libfontconfig-dev mesa-vulkan-drivers \
-            xvfb xauth xdotool scrot gnome-screenshot python3-tk
+            xvfb xauth xdotool scrot gnome-screenshot python3-tk fonts-noto-cjk
 
       - uses: actions/setup-python@v7
         with:

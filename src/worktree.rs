@@ -246,6 +246,9 @@ fn head_tree(repo: &Repository) -> Result<Option<git2::Tree<'_>>, git2::Error> {
     }
 }
 fn patch(diff: git2::Diff<'_>) -> Result<String, git2::Error> {
+    if diff.deltas().len() == 0 {
+        return Ok("No changes.\n".into());
+    }
     let mut text = Vec::new();
     let mut truncated = false;
     diff.print(DiffFormat::Patch, |_, _, line| {
@@ -448,6 +451,22 @@ mod tests {
         assert!(!snapshot.diff.contains("b/file1.txt"));
         f.run(Action::Unstage("file[1].txt".into()));
     }
+    #[test]
+    fn diff_distinguishes_empty_sections_from_binary_changes() {
+        let f = Fixture::new(true);
+        std::fs::write(f.0.join("tracked.txt"), "modified\n").unwrap();
+        let preview = f.run(Action::Diff("tracked.txt".into())).diff;
+        assert!(preview.starts_with("Staged\nNo changes.\n"));
+        f.run(Action::Stage("tracked.txt".into()));
+        let preview = f.run(Action::Diff("tracked.txt".into())).diff;
+        assert!(preview.ends_with("Working tree\nNo changes.\n"));
+        std::fs::write(f.0.join("binary.dat"), [0, 1, 2, 0]).unwrap();
+        let preview = f.run(Action::Diff("binary.dat".into())).diff;
+        let working = preview.split_once("Working tree\n").unwrap().1;
+        assert!(working.contains("binary.dat"));
+        assert!(!working.contains("No changes."));
+    }
+
     #[test]
     fn stages_deletions_and_unstages_before_first_commit() {
         let f = Fixture::new(true);

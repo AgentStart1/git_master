@@ -46,7 +46,7 @@ impl Viewer {
         }
     }
 
-    pub fn accept(&mut self, result: Result<Snapshot, String>, manual: bool) {
+    pub fn accept(&mut self, result: Result<Snapshot, String>) {
         match result {
             Ok(snapshot) => {
                 self.refresh_error = None;
@@ -61,12 +61,12 @@ impl Viewer {
                 }
             }
             Err(error) => {
-                if manual || !matches!(self.state, State::Ready(_)) {
+                if !matches!(self.state, State::Ready(_)) {
                     self.state = State::Failed(error);
                     self.pending = None;
                     self.refresh_error = None;
                 } else {
-                    // Keep readable content and the user's position on a polling error.
+                    // A failed read must never discard a readable snapshot or buffered update.
                     self.refresh_error = Some(error);
                 }
             }
@@ -88,7 +88,11 @@ impl LogViewerHost {
         #[cfg(feature = "test-rpc")]
         crate::test_rpc::worker_gate::wait("GIT_MASTER_TEST_LOGS_GATE");
         let path = crate::operation_log::log_path();
-        read_tail(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()))
+        let result =
+            read_tail(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()));
+        #[cfg(feature = "test-rpc")]
+        crate::test_rpc::log_result_gate::wait();
+        result
     }
 }
 
@@ -144,9 +148,9 @@ mod tests {
     #[test]
     fn paused_reader_keeps_visible_content_until_resuming_even_when_tail_rolls() {
         let mut viewer = Viewer::new();
-        viewer.accept(Ok(snapshot("old visible entry")), false);
+        viewer.accept(Ok(snapshot("old visible entry")));
         viewer.following = false;
-        viewer.accept(Ok(snapshot("new tail without old entry")), false);
+        viewer.accept(Ok(snapshot("new tail without old entry")));
         assert_eq!(viewer.state.display_text(), "old visible entry");
         assert_eq!(
             viewer.pending.as_ref().unwrap().text,
@@ -160,19 +164,36 @@ mod tests {
     #[test]
     fn automatic_failure_keeps_last_good_content_and_recovers() {
         let mut viewer = Viewer::new();
-        viewer.accept(Ok(snapshot("last good entry")), false);
-        viewer.accept(Err("temporarily unavailable".into()), false);
+        viewer.accept(Ok(snapshot("last good entry")));
+        viewer.accept(Err("temporarily unavailable".into()));
         assert_eq!(viewer.state.display_text(), "last good entry");
         assert_eq!(
             viewer.refresh_error.as_deref(),
             Some("temporarily unavailable")
         );
-        viewer.accept(Ok(snapshot("recovered entry")), false);
+        viewer.accept(Ok(snapshot("recovered entry")));
         assert_eq!(viewer.state.display_text(), "recovered entry");
         assert!(viewer.refresh_error.is_none());
-        viewer.accept(Err("manual failure".into()), true);
-        assert!(matches!(viewer.state, State::Failed(_)));
-        assert!(viewer.refresh_error.is_none());
+        viewer.accept(Err("manual failure".into()));
+        assert_eq!(viewer.state.display_text(), "recovered entry");
+        assert_eq!(viewer.refresh_error.as_deref(), Some("manual failure"));
+        let mut initial = Viewer::new();
+        initial.accept(Err("initial failure".into()));
+        assert!(matches!(initial.state, State::Failed(_)));
+    }
+
+    #[test]
+    fn failed_paused_read_preserves_both_displayed_and_buffered_snapshots() {
+        let mut viewer = Viewer::new();
+        viewer.accept(Ok(snapshot("displayed")));
+        viewer.following = false;
+        viewer.accept(Ok(snapshot("buffered")));
+        viewer.accept(Err("read failed".into()));
+        assert_eq!(viewer.state.display_text(), "displayed");
+        assert_eq!(viewer.pending.as_ref().unwrap().text, "buffered");
+        viewer.resume();
+        assert_eq!(viewer.state.display_text(), "buffered");
+        assert_eq!(viewer.refresh_error.as_deref(), Some("read failed"));
     }
 
     #[test]

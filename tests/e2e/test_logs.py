@@ -128,8 +128,9 @@ def test_missing_logs_and_read_error_can_refresh_and_recover(app_factory, isolat
     path.mkdir()
     try:
         logs.click("logs-refresh")
-        tree = logs.wait(lambda t: find(t, "logs-panel").get("state", {}).get("phase") == "failed", "read error shown")
-        assert "Cannot read" in text(find(tree, "logs-content"))
+        tree = logs.wait(lambda t: log_state(t)["refresh_error"] is not None, "read error shown")
+        assert "Cannot read" in text(find(tree, "logs-refresh-error"))
+        assert find(tree, "logs-content")["text"] == "No logs recorded today."
         assert find(tree, "logs-close")["bounds"]
         assert not find(tree, "logs-copy")["interactive"]
         screenshot(logs, "application-logs-read-error.png")
@@ -269,3 +270,158 @@ def test_auto_refresh_failure_retains_content_and_recovers(app_factory, isolated
     tree = ready(logs, marker)
     assert log_state(tree)["refresh_error"] is None
     assert log_state(tree)["following"]
+
+
+@pytest.mark.p1
+@pytest.mark.parametrize("manual", [False, True], ids=["automatic", "manual"])
+def test_paused_read_errors_preserve_content_and_viewport(app_factory, isolated_git, monkeypatch, manual):
+    gate = isolated_git / "paused-error-gate"
+    monkeypatch.setenv("GIT_MASTER_TEST_LOGS_GATE", str(gate))
+    app, _ = setup(app_factory, isolated_git)
+    logs = open_logs(app)
+    tree = ready(logs, "Application started")
+    path = log_path(app, tree)
+    marker = "PAUSED_ERROR_" + uuid.uuid4().hex
+    append_lines(path, "".join(f"paused error entry {i}\n" for i in range(200)) + marker + "\n")
+    ready(logs, marker)
+    logs.wait(end_visible, "ready to pause before read error")
+    logs.scroll("logs-content", 20)
+    tree = logs.wait(lambda t: not log_state(t)["following"], "reading paused before failure")
+    original = find(tree, "logs-content")["text"]
+    original_y = find(tree, "logs-end")["bounds"]["y"]
+    backup = path.with_suffix(".saved")
+    gate.mkdir()
+    try:
+        wait_for(lambda: (gate / "entered").exists(), description="paused automatic read held")
+        path.rename(backup)
+        path.mkdir()
+        if manual:
+            logs.click("logs-refresh")
+        completed = log_state(logs.tree())["completed_reads"]
+        (gate / "release").touch()
+        tree = logs.wait(lambda t: log_state(t)["completed_reads"] >= completed + (2 if manual else 1), "failed reads completed")
+        screenshot(logs, f"paused-{manual}-read-error.png")
+        assert find(tree, "logs-content")["text"] == original, "read errors must retain the paused snapshot"
+        assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1, "error feedback must not move the paused viewport"
+        assert not log_state(tree)["following"]
+        assert find(tree, "logs-refresh-error")["bounds"]["height"] <= 24
+    finally:
+        (gate / "release").touch()
+        if path.is_dir():
+            path.rmdir()
+        if backup.exists():
+            backup.rename(path)
+    resumed = "RECOVER_PAUSED_" + uuid.uuid4().hex
+    append_lines(path, resumed + "\n")
+    tree = logs.wait(lambda t: log_state(t)["refresh_error"] is None and log_state(t)["pending"], "failed paused read recovers into buffer")
+    assert find(tree, "logs-content")["text"] == original
+    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    logs.click("logs-follow")
+    ready(logs, resumed)
+    logs.wait(end_visible, "recovered pending logs followed")
+
+
+@pytest.fixture
+def result_gate(isolated_git, monkeypatch):
+    folder = isolated_git / "log-results"
+    monkeypatch.setenv("GIT_MASTER_TEST_LOGS_RESULT_GATE", str(folder))
+    class Gate:
+        def arm(self, *tickets):
+            folder.mkdir()
+            for ticket in tickets:
+                (folder / f"{ticket}.hold").touch()
+            (folder / "armed").touch()
+        def entered(self, ticket):
+            wait_for(lambda: (folder / f"{ticket}.entered").exists(), description=f"snapshot {ticket} captured")
+        def release(self, ticket):
+            (folder / f"{ticket}.release").touch()
+        def finished(self, ticket):
+            wait_for(lambda: (folder / f"{ticket}.completed").exists(), description=f"snapshot {ticket} worker finished")
+        def started(self, ticket):
+            return (folder / f"{ticket}.entered").exists()
+    gate = Gate()
+    yield gate
+    if folder.exists():
+        for hold in folder.glob("*.hold"):
+            (folder / (hold.stem + ".release")).touch()
+
+
+@pytest.mark.p1
+def test_closed_window_snapshot_arrives_after_reopened_window_is_ready(app_factory, isolated_git, result_gate):
+    app, _ = setup(app_factory, isolated_git)
+    old_logs = open_logs(app)
+    tree = ready(old_logs, "Application started")
+    old_generation = tree["state"]["window_generation"]
+    path = log_path(app, tree)
+    old_marker = "CLOSED_WINDOW_" + uuid.uuid4().hex
+    path.write_text(old_marker + "\n", encoding="utf-8")
+    ready(old_logs, old_marker)
+    result_gate.arm(1)
+    result_gate.entered(1)  # Snapshot contains old_marker before the window closes.
+    old_logs.click("logs-close")
+    closed(app)
+    new_marker = "REOPENED_WINDOW_" + uuid.uuid4().hex
+    path.write_text(new_marker + "\n", encoding="utf-8")
+    logs = open_logs(app)
+    tree = ready(logs, new_marker)  # New window is loaded while old result is held.
+    generation = tree["state"]["window_generation"]
+    assert generation > old_generation
+    logs.window_geometry()  # Native window count must also be exactly one.
+    logs.click("logs-follow")
+    tree = logs.wait(lambda t: not log_state(t)["following"], "new window explicitly paused")
+    completed = log_state(tree)["completed_reads"]
+    result_gate.release(1)
+    result_gate.finished(1)
+    def unchanged_after_old_completion(t):
+        assert t["state"]["window_generation"] == generation
+        assert not log_state(t)["following"]
+        content = find(t, "logs-content")["text"]
+        assert new_marker in content and old_marker not in content
+        return log_state(t)["completed_reads"] >= completed + 2
+    logs.wait(unchanged_after_old_completion, "new window remains unchanged through later polls")
+    screenshot(logs, "reopened-window-after-old-result.png")
+
+
+@pytest.mark.p1
+def test_queued_manual_refresh_is_serial_and_inflight_result_obeys_pause(app_factory, isolated_git, result_gate):
+    app, _ = setup(app_factory, isolated_git)
+    logs = open_logs(app)
+    tree = ready(logs, "Application started")
+    path = log_path(app, tree)
+    first = "CAPTURED_" + uuid.uuid4().hex
+    second = "QUEUED_" + uuid.uuid4().hex
+    path.write_text("".join(f"inflight entry {i}\n" for i in range(200)) + first + "\n", encoding="utf-8")
+    result_gate.arm(1, 2)
+    result_gate.entered(1)
+    tree = logs.wait(lambda t: log_state(t)["active_read"] is not None, "first inflight read painted")
+    baseline = log_state(tree)["completed_reads"]
+    ticks = log_state(tree)["poll_ticks"]
+    active = log_state(tree)["active_read"]
+    assert log_state(tree)["active_read_manual"] is False
+    for _ in range(3):
+        logs.click("logs-refresh")
+    tree = logs.wait(lambda t: log_state(t)["poll_ticks"] >= ticks + 2, "timer ticks while first read is held")
+    assert log_state(tree)["active_read"] == active
+    assert log_state(tree)["completed_reads"] == baseline
+    assert log_state(tree)["manual_queued"]
+    assert not result_gate.started(2), "manual or automatic reads must not overlap"
+    path.write_text("".join(f"queued entry {i}\n" for i in range(200)) + second + "\n", encoding="utf-8")
+    result_gate.release(1)
+    result_gate.entered(2)
+    tree = ready(logs, first)
+    tree = logs.wait(lambda t: log_state(t)["completed_reads"] == baseline + 1 and
+        log_state(t)["active_read"] != active and not log_state(t)["manual_queued"], "one queued refresh starts after first result")
+    assert log_state(tree)["active_read_manual"] is True, "a later automatic poll cannot stand in for queued manual refresh"
+    assert not result_gate.started(3)
+    logs.wait(end_visible, "first result followed before pausing inflight refresh")
+    logs.scroll("logs-content", 20)
+    tree = logs.wait(lambda t: not log_state(t)["following"], "pause after second snapshot captured")
+    original_y = find(tree, "logs-end")["bounds"]["y"]
+    result_gate.release(2)
+    tree = logs.wait(lambda t: log_state(t)["completed_reads"] >= baseline + 2 and log_state(t)["pending"], "inflight queued result buffered using current follow state")
+    assert find(tree, "logs-content")["text"].endswith(first)
+    assert second not in find(tree, "logs-content")["text"]
+    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    logs.click("logs-follow")
+    ready(logs, second)
+    logs.wait(end_visible, "queued result followed after explicit resume")

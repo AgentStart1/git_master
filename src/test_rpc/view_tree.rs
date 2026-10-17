@@ -16,7 +16,7 @@ pub struct Rect {
 }
 
 impl Rect {
-    fn from_gpui(bounds: &Bounds<Pixels>) -> Self {
+    pub(super) fn from_gpui(bounds: &Bounds<Pixels>) -> Self {
         Self {
             x: bounds.origin.x.into(),
             y: bounds.origin.y.into(),
@@ -43,7 +43,7 @@ pub struct ViewNode {
 }
 
 impl ViewNode {
-    fn new(node_type: &str) -> Self {
+    pub(super) fn new(node_type: &str) -> Self {
         Self {
             state: None,
             node_type: node_type.to_string(),
@@ -55,22 +55,22 @@ impl ViewNode {
         }
     }
 
-    fn with_id(mut self, id: &str) -> Self {
+    pub(super) fn with_id(mut self, id: &str) -> Self {
         self.id = Some(id.to_string());
         self
     }
 
-    fn with_state(mut self, state: serde_json::Value) -> Self {
+    pub(super) fn with_state(mut self, state: serde_json::Value) -> Self {
         self.state = Some(state);
         self
     }
 
-    fn with_text(mut self, text: &str) -> Self {
+    pub(super) fn with_text(mut self, text: &str) -> Self {
         self.text = Some(text.to_string());
         self
     }
 
-    fn with_interactive(mut self) -> Self {
+    pub(super) fn with_interactive(mut self) -> Self {
         self.interactive = true;
         self
     }
@@ -82,7 +82,7 @@ impl ViewNode {
         self
     }
 
-    fn with_child(mut self, child: ViewNode) -> Self {
+    pub(super) fn with_child(mut self, child: ViewNode) -> Self {
         self.children.push(child);
         self
     }
@@ -910,85 +910,4 @@ mod tests {
         assert_eq!(tree.id.as_deref(), Some("root"));
         assert!(!tree.children.is_empty());
     }
-}
-
-pub fn build_logs_tree(
-    viewer: &crate::log_viewer::Viewer,
-    reg: &HashMap<String, Bounds<Pixels>>,
-    revision: u64,
-    completed_reads: u64,
-) -> ViewNode {
-    use crate::log_viewer::State;
-    let state = &viewer.state;
-    let message = state.display_text();
-    let phase = match state {
-        State::Loading => "loading",
-        State::Failed(_) => "failed",
-        State::Ready(_) => "ready",
-    };
-    let mut panel = ViewNode::new("panel")
-        .with_id("logs-panel")
-        .with_state(serde_json::json!({"phase":phase}))
-        .with_child(
-            ViewNode::new("panel")
-                .with_id("logs-content")
-                .with_interactive()
-                .with_text(&message)
-                .with_child(
-                    ViewNode::new("text")
-                        .with_id("logs-end")
-                        .with_text(message.rsplit('\n').next().unwrap_or_default()),
-                ),
-        );
-    if let State::Ready(snapshot) = state {
-        panel = panel.with_state(
-            serde_json::json!({"phase":phase,"path":snapshot.path,"truncated":snapshot.truncated}),
-        );
-    }
-    for (id, enabled) in [
-        ("logs-close", true),
-        ("logs-follow", true),
-        ("logs-refresh", true),
-        (
-            "logs-copy",
-            matches!(state, State::Ready(snapshot) if !snapshot.text.is_empty()),
-        ),
-    ] {
-        let node = ViewNode::new("button").with_id(id);
-        panel = panel.with_child(if enabled {
-            node.with_interactive()
-        } else {
-            node
-        });
-    }
-
-    if let Some(error) = &viewer.refresh_error {
-        panel = panel.with_child(
-            ViewNode::new("text")
-                .with_id("logs-refresh-error")
-                .with_text(error),
-        );
-    }
-
-    if let Some(state) = &mut panel.state {
-        state["following"] = serde_json::json!(viewer.following);
-        state["pending"] = serde_json::json!(viewer.pending.is_some());
-        state["refresh_error"] = serde_json::json!(viewer.refresh_error);
-        state["completed_reads"] = serde_json::json!(completed_reads);
-    }
-
-    fn attach(node: &mut ViewNode, reg: &HashMap<String, Bounds<Pixels>>) {
-        if let Some(bounds) = node.id.as_ref().and_then(|id| reg.get(id)) {
-            node.bounds = Some(Rect::from_gpui(bounds));
-        }
-        for child in &mut node.children {
-            attach(child, reg);
-        }
-    }
-    let mut root = ViewNode::new("window")
-        .with_id("logs-root")
-        .with_state(serde_json::json!({"view_revision":revision}))
-        .with_child(panel);
-    attach(&mut root, reg);
-    root
 }

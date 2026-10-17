@@ -11,6 +11,10 @@ pub struct LogsWindow {
     manual_requested: bool,
     completed_reads: u64,
     poll_task: Option<Task<()>>,
+    #[cfg(feature = "test-rpc")]
+    poll_ticks: u64,
+    #[cfg(feature = "test-rpc")]
+    active_read_manual: bool,
     revision: u64,
     task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
@@ -80,6 +84,10 @@ impl GitMasterApp {
                         manual_requested: false,
                         completed_reads: 0,
                         poll_task: None,
+                        #[cfg(feature = "test-rpc")]
+                        poll_ticks: 0,
+                        #[cfg(feature = "test-rpc")]
+                        active_read_manual: false,
                         revision: 0,
                         task: None,
                         #[cfg(feature = "test-rpc")]
@@ -98,7 +106,14 @@ impl GitMasterApp {
                                 .timer(std::time::Duration::from_secs(1))
                                 .await;
                             if entity
-                                .update(cx, |this, cx| this.refresh(false, cx))
+                                .update(cx, |this, cx| {
+                                    #[cfg(feature = "test-rpc")]
+                                    {
+                                        this.poll_ticks += 1;
+                                        cx.notify();
+                                    }
+                                    this.refresh(false, cx);
+                                })
                                 .is_err()
                             {
                                 break;
@@ -124,6 +139,10 @@ impl LogsWindow {
             return;
         }
         self.reading = true;
+        #[cfg(feature = "test-rpc")]
+        {
+            self.active_read_manual = manual;
+        }
         self.revision += 1;
         let revision = self.revision;
 
@@ -139,7 +158,7 @@ impl LogsWindow {
                     }
                     this.reading = false;
                     this.completed_reads += 1;
-                    this.viewer.accept(result, manual);
+                    this.viewer.accept(result);
                     cx.notify();
                     if std::mem::take(&mut this.manual_requested) {
                         this.refresh(true, cx);
@@ -272,31 +291,42 @@ impl LogsWindow {
                 .gap(px(12.0))
                 .child(toolbar)
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(rgb(if self.viewer.following {
-                            theme::GREEN
-                        } else {
-                            theme::YELLOW
-                        }))
-                        .child(if self.viewer.following {
-                            "Auto refresh: 1s · Following latest"
-                        } else if self.viewer.pending.is_some() {
-                            "Auto refresh: 1s · Follow paused · New logs available"
-                        } else {
-                            "Auto refresh: 1s · Follow paused"
-                        }),
-                )
-                .children(self.viewer.refresh_error.as_ref().map(|error| {
                     self.track(
-                        "logs-refresh-error",
+                        if self.viewer.refresh_error.is_some() {
+                            "logs-refresh-error"
+                        } else {
+                            "logs-live-status"
+                        },
                         div()
+                            .h(px(20.0))
+                            .flex_shrink_0()
                             .text_xs()
-                            .text_color(rgb(theme::RED))
                             .text_ellipsis()
-                            .child(format!("Refresh failed (retrying automatically): {error}")),
-                    )
-                }))
+                            .text_color(rgb(if self.viewer.refresh_error.is_some() {
+                                theme::RED
+                            } else if self.viewer.following {
+                                theme::GREEN
+                            } else {
+                                theme::YELLOW
+                            }))
+                            .child(if let Some(error) = &self.viewer.refresh_error {
+                                format!(
+                                    "Auto refresh retrying · {} · {error}",
+                                    if self.viewer.following {
+                                        "Following latest"
+                                    } else {
+                                        "Follow paused"
+                                    }
+                                )
+                            } else if self.viewer.following {
+                                "Auto refresh: 1s · Following latest".into()
+                            } else if self.viewer.pending.is_some() {
+                                "Auto refresh: 1s · Follow paused · New logs available".into()
+                            } else {
+                                "Auto refresh: 1s · Follow paused".into()
+                            }),
+                    ),
+                )
                 .children(notice.map(|message| {
                     div()
                         .text_xs()
@@ -394,11 +424,18 @@ impl Render for LogsWindow {
                             return;
                         }
                         this.view_revision += 1;
-                        let tree = crate::test_rpc::view_tree::build_logs_tree(
+                        let tree = crate::test_rpc::logs::build_tree(
                             &this.viewer,
                             &this.bounds_registry.borrow(),
                             this.view_revision,
-                            this.completed_reads,
+                            crate::test_rpc::logs::Observation {
+                                completed_reads: this.completed_reads,
+                                generation: this.publication_owner.1,
+                                poll_ticks: this.poll_ticks,
+                                active_read: this.reading.then_some(this.revision),
+                                active_read_manual: this.reading.then_some(this.active_read_manual),
+                                manual_queued: this.manual_requested,
+                            },
                         );
                         crate::test_rpc::server::publish_tree(
                             &this.tree_provider,

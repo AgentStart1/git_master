@@ -92,8 +92,7 @@ def test_large_logs_are_bounded_and_really_scroll(app_factory, isolated_git):
     assert "ENTRY 0:" not in content
     assert find(tree, "logs-panel")["state"]["truncated"]
     tree = logs.wait(end_visible, "newest log initially followed")
-    logs.scroll("logs-content", 100)
-    tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "upward wheel pauses follow")
+    tree = scroll_up_and_pause(logs, 100)
     before = anchor(tree)[0]
     for _ in range(25):
         if end_visible(tree):
@@ -119,6 +118,25 @@ def assert_same_anchor(tree, previous):
     current = anchor(tree)
     assert current[:2] == previous[:2], "the same displayed row must remain visible"
     assert abs(current[2] - previous[2]) < 1, "the paused painted row must not move"
+
+
+def scroll_up_and_pause(logs, steps):
+    logs.scroll("logs-content", steps)
+    candidate = None
+    since = None
+    def settled(tree):
+        nonlocal candidate, since
+        if log_state(tree)["following"] or end_visible(tree):
+            return False
+        current = anchor(tree)
+        ticks = log_state(tree)["poll_ticks"]
+        if candidate != current:
+            candidate, since = current, ticks
+        # X11 emits one native event per notch. The first paused paint may
+        # precede the rest of the batch. Establish the baseline before changing
+        # files/releasing reads, across two real timer-driven painted frames.
+        return ticks >= since + 2
+    return logs.wait(settled, "native wheel batch settled before log update")
 
 
 def end_visible(tree):
@@ -205,8 +223,7 @@ def test_logs_auto_refresh_follow_pause_and_resume(app_factory, isolated_git):
     tree = ready(logs, marker)  # No Refresh click.
     tree = logs.wait(end_visible, "automatic append followed into view")
     assert log_state(tree)["following"]
-    logs.scroll("logs-content", 20)
-    tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "manual upward scroll pauses following")
+    tree = scroll_up_and_pause(logs, 20)
     original = find(tree, "logs-content")["text"]
     original_anchor = anchor(tree)
     completed = log_state(tree)["completed_reads"]
@@ -240,8 +257,7 @@ def test_paused_logs_keep_position_when_bounded_tail_rolls(app_factory, isolated
     append_lines(path, "".join(f"ORIGINAL_{prefix}_{i}\n" for i in range(2100)))
     tree = ready(logs, f"ORIGINAL_{prefix}_2099")
     logs.wait(end_visible, "bounded initial tail followed")
-    logs.scroll("logs-content", 30)
-    tree = logs.wait(lambda t: not log_state(t)["following"], "paused bounded tail")
+    tree = scroll_up_and_pause(logs, 30)
     original = find(tree, "logs-content")["text"]
     original_anchor = anchor(tree)
     completed = log_state(tree)["completed_reads"]
@@ -299,8 +315,7 @@ def test_paused_read_errors_preserve_content_and_viewport(app_factory, isolated_
     append_lines(path, "".join(f"paused error entry {i}\n" for i in range(200)) + marker + "\n")
     ready(logs, marker)
     logs.wait(end_visible, "ready to pause before read error")
-    logs.scroll("logs-content", 20)
-    tree = logs.wait(lambda t: not log_state(t)["following"], "reading paused before failure")
+    tree = scroll_up_and_pause(logs, 20)
     original = find(tree, "logs-content")["text"]
     original_anchor = anchor(tree)
     backup = path.with_suffix(".saved")
@@ -428,8 +443,7 @@ def test_queued_manual_refresh_is_serial_and_inflight_result_obeys_pause(app_fac
     assert log_state(tree)["active_read_manual"] is True, "a later automatic poll cannot stand in for queued manual refresh"
     assert not result_gate.started(3)
     logs.wait(end_visible, "first result followed before pausing inflight refresh")
-    logs.scroll("logs-content", 20)
-    tree = logs.wait(lambda t: not log_state(t)["following"], "pause after second snapshot captured")
+    tree = scroll_up_and_pause(logs, 20)
     original_anchor = anchor(tree)
     result_gate.release(2)
     tree = logs.wait(lambda t: log_state(t)["completed_reads"] >= baseline + 2 and log_state(t)["pending"], "inflight queued result buffered using current follow state")

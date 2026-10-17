@@ -3,7 +3,7 @@ import uuid
 import pytest
 from driver import find
 from test_logs import (setup, open_logs, ready, log_path, log_state, end_visible,
-                       result_gate, anchor, assert_same_anchor)
+                       result_gate, anchor, assert_same_anchor, scroll_up_and_pause)
 from test_task_status import screenshot
 
 
@@ -36,8 +36,7 @@ def test_rotation_replaces_the_tail_and_preserves_follow_mode(
     assert log_state(tree)["display_rows"] >= 1000
     assert 0 < log_state(tree)["painted_rows"] < 100, "large logs must not lay out every retained row"
     if paused:
-        logs.scroll("logs-content", 30)
-        tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "paused before rotation")
+        tree = scroll_up_and_pause(logs, 30)
     original = find(tree, "logs-content")["text"]
     original_anchor = anchor(tree)
     result_gate.arm(1, 2, 3)

@@ -123,6 +123,13 @@ class App:
                 pid = wintypes.DWORD()
                 user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
                 if pid.value == self.proc.pid and user32.IsWindowVisible(handle):
+                    title = getattr(self, "window_title", None)
+                    if title is not None:
+                        label = ctypes.create_unicode_buffer(256)
+                        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+                        user32.GetWindowTextW(handle, label, 256)
+                        if label.value != title:
+                            return True
                     candidates.append(handle)
                 return True
             user32.EnumWindows(callback_type(candidate), 0)
@@ -158,7 +165,12 @@ class App:
         if sys.platform.startswith("linux"):
             def xdo(*args):
                 return subprocess.check_output(["xdotool", *map(str, args)], text=True, timeout=3).strip()
-            windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
+            title = getattr(self, "window_title", None)
+            if title is not None:
+                import re
+                windows = xdo("search", "--onlyvisible", "--all", "--pid", self.proc.pid, "--name", "^" + re.escape(title) + "$").splitlines()
+            else:
+                windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
             assert len(windows) == 1, windows
             self.window = windows[0]
             xdo("windowfocus", self.window)
@@ -173,7 +185,7 @@ class App:
         tree = self.wait(lambda tree: (node := find(tree, node_id)) and node.get("interactive") and node.get("bounds"), f"clickable {node_id}")
         bounds = find(tree, node_id)["bounds"]
         x, y, width, height = self.window_geometry()
-        root = find(tree, "root")["bounds"]
+        root = (find(tree, "root") or find(tree, "logs-root"))["bounds"]
         scale_x, scale_y = width / root["width"], height / root["height"]
         local_x, local_y = bounds["x"] + bounds["width"] * fraction[0], bounds["y"] + bounds["height"] * fraction[1]
         assert 0 < local_x < root["width"] and 0 < local_y < root["height"], f"{node_id} outside viewport"
@@ -248,6 +260,18 @@ class App:
         except Exception as error:
             (self.artifacts / "screenshot-error.txt").write_text(str(error), encoding="utf-8")
 
+        try:
+            logs = self.rpc("get_logs_view_tree")
+            if logs:
+                (self.artifacts / "logs-view-tree.json").write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
+                import copy
+                log_window = copy.copy(self)
+                log_window.window_title = "Git Master Logs"
+                x, y, width, height = log_window.window_geometry()
+                pyautogui.screenshot(region=(x, y, width, height)).save(self.artifacts / "logs-window.png")
+        except Exception as error:
+            (self.artifacts / "logs-diagnostics-error.txt").write_text(str(error), encoding="utf-8")
+
     def close(self):
         if self.proc.poll() is None:
             self.proc.terminate()
@@ -282,3 +306,19 @@ def make_repo(path, *, commit=True):
 def commit_all(path, message):
     git(path, "add", "--all")
     git(path, "commit", "--allow-empty", "-m", message)
+
+
+def assert_copied_text(app, button_id, expected):
+    # Keep Tk's delayed clipboard rendering out of the desktop driver process.
+    subprocess.run([sys.executable, "-c",
+        "import tkinter; r=tkinter.Tk(); r.withdraw(); r.clipboard_clear(); "
+        "r.clipboard_append('unchanged clipboard sentinel'); r.update(); r.destroy()"],
+        check=True, timeout=5)
+    app.click(button_id)
+    def copied_output():
+        result = subprocess.run([sys.executable, "-c",
+            "import tkinter,json; r=tkinter.Tk(); r.withdraw(); "
+            "print(json.dumps(r.clipboard_get())); r.destroy()"],
+            capture_output=True, text=True, timeout=5)
+        return result.returncode == 0 and json.loads(result.stdout) == expected
+    wait_for(copied_output, description="complete clipboard output")

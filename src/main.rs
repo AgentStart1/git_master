@@ -5,6 +5,7 @@ mod desktop_actions;
 mod diff_model;
 mod diff_preview;
 mod git_ops;
+mod log_viewer;
 mod models;
 mod operation_log;
 mod repo_actions;
@@ -36,11 +37,12 @@ fn main() {
     }
     Application::new().run(|cx: &mut App| {
         #[cfg(feature = "test-rpc")]
-        let (tree_provider, command_queue) = {
+        let (tree_provider, logs_provider, command_queue) = {
             let provider = test_rpc::server::ViewTreeProvider::default();
             let cmds = test_rpc::server::CommandQueue::default();
-            test_rpc::server::start(provider.clone(), cmds.clone());
-            (provider, cmds)
+            let logs = test_rpc::server::ViewTreeProvider::default();
+            test_rpc::server::start(provider.clone(), logs.clone(), cmds.clone());
+            (provider, logs, cmds)
         };
 
         #[allow(unused_variables)]
@@ -67,6 +69,7 @@ fn main() {
                         #[cfg(feature = "test-rpc")]
                         {
                             app.tree_provider = tree_provider.clone();
+                            app.logs_tree_provider = logs_provider.clone();
                             app.command_queue = command_queue.clone();
                         }
                         app

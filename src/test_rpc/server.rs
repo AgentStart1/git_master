@@ -64,7 +64,11 @@ pub enum TestCommand {
 
 pub type CommandQueue = Arc<Mutex<Vec<TestCommand>>>;
 
-pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
+pub fn start(
+    tree_provider: ViewTreeProvider,
+    logs_provider: ViewTreeProvider,
+    command_queue: CommandQueue,
+) {
     let port: u16 = std::env::var("GIT_MASTER_RPC_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -93,6 +97,7 @@ pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
             };
             let provider = tree_provider.clone();
             let cmds = command_queue.clone();
+            let logs = logs_provider.clone();
             thread::spawn(move || {
                 let reader = BufReader::new(match stream.try_clone() {
                     Ok(s) => s,
@@ -107,7 +112,7 @@ pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
                         Err(_) => break,
                     };
 
-                    if let Some(response) = handle_request(&line, &provider, &cmds) {
+                    if let Some(response) = handle_request(&line, &provider, &logs, &cmds) {
                         let mut out = serde_json::to_string(&response).unwrap_or_default();
                         out.push('\n');
                         if writer.write_all(out.as_bytes()).is_err() {
@@ -123,6 +128,7 @@ pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
 fn handle_request(
     raw: &str,
     provider: &ViewTreeProvider,
+    logs: &ViewTreeProvider,
     commands: &CommandQueue,
 ) -> Option<Value> {
     let req: Value = match serde_json::from_str(raw) {
@@ -143,8 +149,13 @@ fn handle_request(
     let params = req.get("params");
 
     match method {
-        Some("get_view_tree") => {
-            let tree = provider.lock().ok().and_then(|g| g.clone());
+        Some("get_view_tree") | Some("get_logs_view_tree") => {
+            let selected = if method == Some("get_logs_view_tree") {
+                logs
+            } else {
+                provider
+            };
+            let tree = selected.lock().ok().and_then(|g| g.clone());
             Some(json!({
                 "jsonrpc": "2.0",
                 "result": tree,

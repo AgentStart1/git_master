@@ -34,6 +34,10 @@ pub struct ContextMenu {
 }
 
 pub struct GitMasterApp {
+    pub log_window: Option<WindowHandle<crate::ui::log_viewer::LogsWindow>>,
+    pub log_window_generation: u64,
+    #[cfg(feature = "test-rpc")]
+    pub logs_tree_provider: crate::test_rpc::server::ViewTreeProvider,
     #[cfg(feature = "test-rpc")]
     pub test_prompt: crate::test_rpc::prompt::PromptState,
     pub worktree: Option<(PathBuf, Result<crate::worktree::Snapshot, String>)>,
@@ -88,6 +92,10 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            log_window: None,
+            log_window_generation: 0,
+            #[cfg(feature = "test-rpc")]
+            logs_tree_provider: Default::default(),
             #[cfg(feature = "test-rpc")]
             test_prompt: Default::default(),
             worktree: None,

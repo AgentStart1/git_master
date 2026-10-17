@@ -68,7 +68,7 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 
 ### Coverage audit additions
 
-The suite now has 65 cases: 26 P0 and 39 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+The suite now has 69 cases: 26 P0 and 43 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
 
 | Priority | Previously missing workflow | Assertions |
 |---|---|---|
@@ -85,7 +85,7 @@ The suite now has 65 cases: 26 P0 and 39 P1. The audit compared the worktree act
 | P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
 | P1 | Native workspace picker (Windows) | Cancel preserves selection; choosing another workspace clears old details and rescans |
 
-The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 50 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, clipboard integration, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
+The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 67 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
 
 `GIT_MASTER_TEST_CONFIG_DIR` redirects libgit2's system/global/XDG/ProgramData configuration search paths in the test build before threads start. Git subprocesses separately use `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; both configuration readers must be isolated. Production builds do not honor the test-only setting.
 
@@ -97,7 +97,7 @@ Four desktop cases exercise rejected branch deletion, rejected checkout, cancell
 
 The six driver acknowledgement checks include both positive and cancelled confirmations disappearing without a new result. Test snapshots are emitted after painting and published by monotonically increasing view revisions; a late or duplicate worker result cannot replace a newer snapshot. A Rust regression forces that out-of-order publication without timing assumptions.
 
-A separate Windows regression holds a completed scan on its worker, opens and cancels the native workspace picker, then releases the result. It fails before the fix that separates directory-prompt ownership from scan-task ownership. `GIT_MASTER_TEST_SCAN_GATE` is confined to the test build and worker thread with a 30-second bound and fixture release in `finally`. The folder-switch case waits for the native dialog to be active, fills and verifies its focused Edit control via standard native control messages, observes the expected folder contents through Windows UI Automation, and clicks Select Folder. Windows PowerShell/UIAutomationClient is required for these two native-dialog cases; other cases retain normal desktop clicks and read-only application RPC observations.
+A separate Windows regression holds a completed scan on its worker, opens and cancels the native workspace picker, then releases the result. It fails before the fix that separates directory-prompt ownership from scan-task ownership. `GIT_MASTER_TEST_SCAN_GATE` is confined to the test build and worker thread with a 30-second bound and fixture release in `finally`. The folder-switch case waits for the native dialog to be active, fills and verifies its focused Edit control via standard native control messages, observes the expected folder contents through Windows UI Automation, and clicks Select Folder. Control rebuilds during shell navigation retry only ElementNotAvailableException observations; the expected folder item must still appear. Windows PowerShell/UIAutomationClient is required for these two native-dialog cases; other cases retain normal desktop clicks and read-only application RPC observations.
 
 ### Asynchronous navigation regressions
 
@@ -109,7 +109,7 @@ Selection and workspace transitions invalidate read-request ownership. A complet
 
 Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmation and cancellation both have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
 
-Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 65 desktop E2E cases and also run in CI.
+Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 69 desktop E2E cases and also run in CI.
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 
@@ -128,3 +128,7 @@ Twelve task-progress cases hold Stage, Unstage, Save, Apply, Pop and Drop on the
 On Windows, if foreground activation is denied, the driver temporarily raises only its own window and clicks a safe header point after verifying that point belongs to the test process; it then restores normal stacking. It never clicks another application's window to obtain focus.
 
 Mutation verification: removing the worktree start-status update makes the Stage-after-failure case reject the stale error summary; disabling vertical scrolling makes the long-error case time out waiting for the painted final line to enter the viewport. Both mutations were verified to fail before restoring the fixes. Async navigation tests wait for the painted busy/status frame before resolving repository-row coordinates, and assert that concurrent Change/Stash reads preserve the active Push summary.
+
+The independent application-log window has its own GPUI entity, request ownership and cancellable read task. `LogViewerHost` reads the current daily file off the UI thread and bounds snapshots to the latest 256 KiB and 2,000 lines. A missing file is an empty state; read errors can be retried. Closing releases the view and cancels publication, and reopening starts a fresh request. Existing log redaction stays at the writer.
+
+Four P1 desktop cases verify separate-window activation without changing the main selection, refresh and clipboard contents, bounded large-log scrolling using painted end-line bounds, missing/read-error recovery, and closing/reopening while a read is held. Windows also exercises native Alt+F4 closure. `GIT_MASTER_TEST_LOGS_GATE` controls the reader via the existing test-only worker gate. `get_logs_view_tree` exposes read-only snapshots after the log window paints; the driver selects windows by process ID plus exact title and uses each window's own bounds. Log fixtures assert paths stay inside isolated test state before changing files, and use unique refresh markers to reject stale snapshots.

@@ -15,3 +15,5 @@ pub mod canvas_interaction;
 pub mod worktree;
 
 pub mod diff_view;
+
+pub mod log_viewer;

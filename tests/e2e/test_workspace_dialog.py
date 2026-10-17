@@ -34,6 +34,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+try {
 $dialog = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$request.handle)
 $items = $dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
     [System.Windows.Automation.Condition]::TrueCondition)
@@ -43,6 +44,15 @@ foreach ($item in $items) {
         [Console]::Write('ready')
         break
     }
+}
+} catch {
+    # Shell navigation can replace controls during this read. Retry the observation,
+    # but keep all other automation failures visible and still require the item.
+    if ($_.Exception -is [System.Windows.Automation.ElementNotAvailableException] -or
+        $_.Exception.InnerException -is [System.Windows.Automation.ElementNotAvailableException]) {
+        exit 0
+    }
+    throw
 }
 '''
     result = subprocess.run(["powershell", "-STA", "-NoProfile", "-NonInteractive", "-Command", script],

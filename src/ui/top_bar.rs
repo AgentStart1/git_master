@@ -190,6 +190,27 @@ impl GitMasterApp {
                     )
                     .child(div().text_sm().text_ellipsis().child(dir_label)),
             )
+            .child(
+                self.track(
+                    "open-logs-btn",
+                    div()
+                        .id("open-logs-btn")
+                        .flex_shrink_0()
+                        .px(px(12.0))
+                        .py(px(7.0))
+                        .rounded(px(7.0))
+                        .text_sm()
+                        .bg(rgb(if self.log_window.is_some() {
+                            theme::ACCENT_SOFT
+                        } else {
+                            theme::BG_OVERLAY
+                        }))
+                        .text_color(rgb(theme::ACCENT))
+                        .cursor_pointer()
+                        .child("Logs")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_logs(cx))),
+                ),
+            )
             .child(self.track("fetch-all-btn", fetch_btn))
             .child(self.track("switch-all-main-btn", main_btn))
             .child(self.track("change-dir-btn", btn));

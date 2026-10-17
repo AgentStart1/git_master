@@ -1,11 +1,8 @@
 """Task feedback remains bounded with real pending and failed Git commands."""
 from pathlib import Path
 import shutil
-import json
-import subprocess
-import sys
 import pytest
-from driver import commit_all, find, git, status, wait_for, text, make_repo, walk
+from driver import commit_all, find, git, status, wait_for, text, make_repo, walk, assert_copied_text
 from test_async_races import gate
 from test_sync import remote_fixture
 
@@ -65,20 +62,7 @@ def test_pending_task_and_verbose_failure_keep_content_visible(app_factory, isol
     assert find(tree, "status-detail-end")["bounds"]["y"] < before_scroll
     assert text(find(tree, "status-detail-end")) == status(tree).splitlines()[-1]
     screenshot(app, "task-error-scrolled.png")
-    # Keep Tk's delayed clipboard rendering out of the desktop driver process.
-    subprocess.run([sys.executable, "-c",
-        "import tkinter; r=tkinter.Tk(); r.withdraw(); r.clipboard_clear(); "
-        "r.clipboard_append('unchanged clipboard sentinel'); r.update(); r.destroy()"],
-        check=True, timeout=5)
-    app.click("status-copy")
-    def copied_output():
-        # Read the OS clipboard through an independent UI connection.
-        result = subprocess.run([sys.executable, "-c",
-            "import tkinter,json; r=tkinter.Tk(); r.withdraw(); "
-            "print(json.dumps(r.clipboard_get())); r.destroy()"],
-            capture_output=True, text=True, timeout=5)
-        return result.returncode == 0 and json.loads(result.stdout) == status(tree)
-    wait_for(copied_output, description="complete diagnostic clipboard output")
+    assert_copied_text(app, "status-copy", status(tree))
     app.click("status-toggle")
     app.wait(lambda t: not find(t, "status-details"), "collapsed diagnostics")
     assert git(remote, "rev-parse", "main") == outgoing

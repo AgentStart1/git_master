@@ -1963,6 +1963,7 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -10,5 +10,6 @@ test-rpc = ["dep:serde", "dep:serde_json"]
 gpui = "0.2.2"
 git2 = "0.21.0"
 chrono = "0.4"
+tempfile = "3"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }

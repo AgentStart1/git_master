@@ -1,4 +1,5 @@
-use git2::{DiffFormat, DiffOptions, Oid, Repository, StatusOptions};
+use crate::diff_preview::DiffRenderer;
+use git2::{DiffOptions, Oid, Repository, StatusOptions};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,18 @@ pub struct WorktreeHost {
 }
 impl WorktreeHost {
     pub fn run(self) -> (Result<(), String>, Result<Snapshot, String>) {
+        let renderer = if matches!(self.action, Action::Diff(_) | Action::ShowStash(_)) {
+            DiffRenderer::detect()
+        } else {
+            DiffRenderer::default()
+        };
+        self.run_with_renderer(&renderer)
+    }
+
+    fn run_with_renderer(
+        self,
+        renderer: &DiffRenderer,
+    ) -> (Result<(), String>, Result<Snapshot, String>) {
         let operation = match self.action {
             Action::Stage(_) => "stage",
             Action::Unstage(_) => "unstage",
@@ -58,7 +71,7 @@ impl WorktreeHost {
         if self.action.mutates() {
             let _ = crate::operation_log::append(&format!("worktree operation={operation} START"));
         }
-        let result = execute(&self.path, &self.action);
+        let result = execute_with_renderer(&self.path, &self.action, renderer);
         if self.action.mutates() {
             let _ = crate::operation_log::append(&format!(
                 "worktree operation={operation} END success={} elapsed_ms={}",
@@ -75,7 +88,15 @@ impl WorktreeHost {
         (result.map(|_| ()), snapshot)
     }
 }
+#[cfg(test)]
 fn execute(path: &Path, action: &Action) -> Result<String, String> {
+    execute_with_renderer(path, action, &DiffRenderer::default())
+}
+fn execute_with_renderer(
+    path: &Path,
+    action: &Action,
+    renderer: &DiffRenderer,
+) -> Result<String, String> {
     let mut repo = Repository::open(path).map_err(|e| e.to_string())?;
     let result = (|| -> Result<String, git2::Error> {
         match action {
@@ -92,8 +113,8 @@ fn execute(path: &Path, action: &Action) -> Result<String, String> {
                 let work = repo.diff_index_to_workdir(None, Some(&mut opts))?;
                 return Ok(format!(
                     "Staged\n{}\nWorking tree\n{}",
-                    patch(staged)?,
-                    patch(work)?
+                    renderer.render(&repo, staged, false)?,
+                    renderer.render(&repo, work, true)?
                 ));
             }
             Action::Stage(path) => {
@@ -159,11 +180,15 @@ fn execute(path: &Path, action: &Action) -> Result<String, String> {
                 );
                 // The index parent preserves staged edits that a combined diff can hide.
                 append_stash_section(
+                    &repo,
+                    renderer,
                     &mut text,
                     "Staged changes",
                     repo.diff_tree_to_tree(Some(&base), Some(&staged), None)?,
                 )?;
                 append_stash_section(
+                    &repo,
+                    renderer,
                     &mut text,
                     "Working tree changes",
                     repo.diff_tree_to_tree(Some(&staged), Some(&working), None)?,
@@ -171,6 +196,8 @@ fn execute(path: &Path, action: &Action) -> Result<String, String> {
                 if commit.parent_count() > 2 {
                     let untracked = commit.parent(2)?.tree()?;
                     append_stash_section(
+                        &repo,
+                        renderer,
                         &mut text,
                         "Untracked files",
                         repo.diff_tree_to_tree(None, Some(&untracked), None)?,
@@ -197,6 +224,8 @@ fn stash_index(repo: &mut Repository, oid: Oid) -> Result<usize, git2::Error> {
 }
 
 fn append_stash_section(
+    repo: &Repository,
+    renderer: &DiffRenderer,
     text: &mut String,
     title: &str,
     diff: git2::Diff<'_>,
@@ -227,7 +256,7 @@ fn append_stash_section(
         text.push_str("  [File list limited to 200 entries]\n");
     }
     text.push('\n');
-    text.push_str(&patch(diff)?);
+    text.push_str(&renderer.render(repo, diff, false)?);
     Ok(())
 }
 
@@ -244,32 +273,6 @@ fn head_tree(repo: &Repository) -> Result<Option<git2::Tree<'_>>, git2::Error> {
         }
         Err(e) => Err(e),
     }
-}
-fn patch(diff: git2::Diff<'_>) -> Result<String, git2::Error> {
-    if diff.deltas().len() == 0 {
-        return Ok("No changes.\n".into());
-    }
-    let mut text = Vec::new();
-    let mut truncated = false;
-    diff.print(DiffFormat::Patch, |_, _, line| {
-        if truncated || text.len() + line.content().len() + 1 > 512 * 1024 {
-            truncated = true;
-            return true;
-        }
-        if matches!(line.origin(), '+' | '-' | ' ') {
-            text.push(line.origin() as u8);
-        }
-        text.extend_from_slice(line.content());
-        true
-    })?;
-    let mut text = String::from_utf8_lossy(&text).into_owned();
-    if truncated {
-        text.push_str("\n[Preview truncated at 512 KiB]\n");
-    }
-    if text.is_empty() {
-        text.push_str("No textual differences (file may be binary).\n");
-    }
-    Ok(text)
 }
 pub fn load(path: &Path) -> Result<Snapshot, String> {
     let mut repo = Repository::open(path).map_err(|e| e.to_string())?;
@@ -401,7 +404,7 @@ mod tests {
                 path: self.0.clone(),
                 action,
             }
-            .run();
+            .run_with_renderer(&DiffRenderer::default());
             result.unwrap();
             snapshot.unwrap()
         }
@@ -410,6 +413,69 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn failed_difft_falls_back_to_the_original_diff() {
+        let f = Fixture::new(true);
+        std::fs::write(f.0.join("tracked.txt"), "modified\n").unwrap();
+        let renderer = DiffRenderer::with_program(f.0.join("missing-difft"));
+        let preview =
+            execute_with_renderer(&f.0, &Action::Diff("tracked.txt".into()), &renderer).unwrap();
+        assert!(preview.contains("difft could not render"));
+        assert!(preview.contains("+modified"));
+        assert!(preview.contains("Staged\nNo changes."));
+    }
+
+    #[test]
+    fn installed_difft_renders_index_worktree_and_stash_contents() {
+        let renderer = DiffRenderer::detect();
+        // This integration case runs when difft is available; the remaining tests
+        // always verify deterministic built-in and failure fallback behavior.
+        if !renderer.is_available() {
+            return;
+        }
+        let f = Fixture::new(true);
+        std::fs::write(f.0.join("tracked.txt"), "staged version\n").unwrap();
+        f.run(Action::Stage("tracked.txt".into()));
+        std::fs::write(f.0.join("tracked.txt"), "working version\n").unwrap();
+        let preview =
+            execute_with_renderer(&f.0, &Action::Diff("tracked.txt".into()), &renderer).unwrap();
+        assert_eq!(
+            preview.matches("Diff renderer: difft").count(),
+            2,
+            "{preview}"
+        );
+        assert!(preview.contains("staged version") && preview.contains("working version"));
+        assert!(!preview.contains('\u{1b}'));
+        std::fs::write(
+            f.0.join("new[1].rs"),
+            "fn main() { println!(\"new file\"); }\n",
+        )
+        .unwrap();
+        let preview =
+            execute_with_renderer(&f.0, &Action::Diff("new[1].rs".into()), &renderer).unwrap();
+        assert!(
+            preview.contains("Diff renderer: difft") && preview.contains("new file"),
+            "{preview}"
+        );
+        let id = f.run(Action::SaveStash).stashes[0].oid;
+        let preview = execute_with_renderer(&f.0, &Action::ShowStash(id), &renderer).unwrap();
+        assert_eq!(
+            preview.matches("Diff renderer: difft").count(),
+            3,
+            "{preview}"
+        );
+        assert!(
+            preview.contains("new file")
+                && preview.contains("staged version")
+                && preview.contains("working version")
+        );
+        std::fs::remove_file(f.0.join("tracked.txt")).unwrap();
+        let preview =
+            execute_with_renderer(&f.0, &Action::Diff("tracked.txt".into()), &renderer).unwrap();
+        assert!(preview.contains("Diff renderer: difft"), "{preview}");
+        assert!(preview.contains("base"));
     }
 
     #[test]

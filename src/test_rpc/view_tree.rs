@@ -101,6 +101,12 @@ pub struct TestViewTreeSnapshot {
     loading_detail: bool,
     context_menu: Option<ContextMenu>,
     status_message: Option<String>,
+    worktree: Option<(
+        std::path::PathBuf,
+        Result<crate::worktree::Snapshot, String>,
+    )>,
+    worktree_loading: bool,
+    busy: bool,
 }
 
 impl GitMasterApp {
@@ -121,6 +127,9 @@ impl GitMasterApp {
             loading_detail: self.loading_detail,
             context_menu: self.context_menu.clone(),
             status_message: self.status_message.clone(),
+            worktree: self.worktree.clone(),
+            worktree_loading: self.worktree_loading,
+            busy: self.busy,
         }
     }
 }
@@ -282,7 +291,19 @@ impl TestViewTreeSnapshot {
         let tab_bar = ViewNode::new("panel")
             .with_id("tab-bar")
             .with_child(info_tab)
-            .with_child(log_tab);
+            .with_child(log_tab)
+            .with_children(
+                [("tab-change", "Git Change"), ("tab-stash", "Git Stash")]
+                    .into_iter()
+                    .map(|(id, label)| {
+                        ViewNode::new("tab")
+                            .with_id(id)
+                            .with_text(label)
+                            .with_interactive()
+                            .with_bounds_from(reg, id)
+                    })
+                    .collect(),
+            );
 
         let body = if self.loading_detail {
             ViewNode::new("text").with_text("Loading…")
@@ -294,6 +315,8 @@ impl TestViewTreeSnapshot {
             match self.active_tab {
                 DetailTab::Info => self.build_info_node(detail),
                 DetailTab::GitLog => self.build_log_node(),
+                DetailTab::GitChange => self.build_worktree_node(false, reg),
+                DetailTab::GitStash => self.build_worktree_node(true, reg),
             }
         } else {
             ViewNode::new("text").with_text("Failed to open repository.")
@@ -310,6 +333,87 @@ impl TestViewTreeSnapshot {
             );
 
         Some(panel)
+    }
+
+    fn build_worktree_node(&self, stash: bool, reg: &HashMap<String, Bounds<Pixels>>) -> ViewNode {
+        let button = |id: &str, label: &str| {
+            let node = ViewNode::new("button")
+                .with_id(id)
+                .with_text(label)
+                .with_bounds_from(reg, id);
+            if self.busy || self.worktree_loading {
+                node
+            } else {
+                node.with_interactive()
+            }
+        };
+        let mut node = ViewNode::new("panel")
+            .with_id("worktree-content")
+            .with_child(button("worktree-refresh", "Refresh"));
+        if stash {
+            node = node.with_child(button("stash-save", "Stash changes + untracked files"));
+        }
+        if self.worktree_loading {
+            return node.with_child(ViewNode::new("text").with_text("Loading…"));
+        }
+        let Some((path, result)) = &self.worktree else {
+            return node;
+        };
+        if self
+            .detail
+            .as_ref()
+            .is_none_or(|detail| std::path::Path::new(&detail.path) != path)
+        {
+            return node;
+        }
+        let data = match result {
+            Ok(data) => data,
+            Err(error) => return node.with_child(ViewNode::new("text").with_text(error)),
+        };
+        if stash {
+            if data.stashes.is_empty() {
+                node = node.with_child(ViewNode::new("text").with_text("No stashes."));
+            }
+            for entry in &data.stashes {
+                let id = entry.oid;
+                node = node.with_child(
+                    ViewNode::new("text")
+                        .with_text(&format!("stash@{{{}}} {}", entry.index, entry.message)),
+                );
+                for (action, label) in [
+                    ("show", "View"),
+                    ("apply", "Apply"),
+                    ("pop", "Pop"),
+                    ("drop", "Delete"),
+                ] {
+                    node = node.with_child(button(&format!("stash-{action}-{id}"), label));
+                }
+            }
+        } else {
+            if data.changes.is_empty() {
+                node = node.with_child(ViewNode::new("text").with_text("Working tree clean."));
+            }
+            for (index, entry) in data.changes.iter().enumerate() {
+                node = node
+                    .with_child(ViewNode::new("text").with_text(&format!(
+                        "{} — {}",
+                        entry.path.display(),
+                        entry.status
+                    )))
+                    .with_child(button(&format!("change-diff-{index}"), "Diff"));
+                if entry.unstaged {
+                    node = node.with_child(button(&format!("change-stage-{index}"), "Stage"));
+                }
+                if entry.staged {
+                    node = node.with_child(button(&format!("change-unstage-{index}"), "Unstage"));
+                }
+            }
+        }
+        node.with_child(
+            ViewNode::new("text")
+                .with_id("worktree-diff")
+                .with_text(&data.diff),
+        )
     }
 
     fn build_info_node(&self, detail: &crate::models::RepoDetail) -> ViewNode {
@@ -555,6 +659,58 @@ impl TestViewTreeSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_snapshot_exposes_actions_and_hides_other_repository_data() {
+        let app = GitMasterApp::new();
+        let mut snapshot = app.test_view_tree_snapshot();
+        let path = std::path::PathBuf::from("fixture");
+        snapshot.detail = Some(RepoDetail {
+            path: "fixture".into(),
+            current_branch: "main".into(),
+            branches: vec![],
+            remotes: vec![],
+            head_labels: Default::default(),
+            file_status: Default::default(),
+        });
+        snapshot.worktree = Some((
+            path,
+            Ok(crate::worktree::Snapshot {
+                changes: vec![crate::worktree::Change {
+                    path: "file.txt".into(),
+                    status: "Modified".into(),
+                    staged: true,
+                    unstaged: true,
+                }],
+                stashes: vec![],
+                diff: "+preview".into(),
+            }),
+        ));
+        let find = |node: &ViewNode, id: &str| {
+            node.children
+                .iter()
+                .find(|child| child.id.as_deref() == Some(id))
+                .cloned()
+        };
+        let tree = snapshot.build_worktree_node(false, &HashMap::new());
+        assert!(find(&tree, "change-stage-0").unwrap().interactive);
+        assert!(find(&tree, "change-unstage-0").unwrap().interactive);
+        assert_eq!(
+            find(&tree, "worktree-diff").unwrap().text.as_deref(),
+            Some("+preview")
+        );
+        snapshot.busy = true;
+        let tree = snapshot.build_worktree_node(false, &HashMap::new());
+        assert!(!find(&tree, "change-stage-0").unwrap().interactive);
+        snapshot.detail.as_mut().unwrap().path = "other-repo".into();
+        assert!(
+            find(
+                &snapshot.build_worktree_node(false, &HashMap::new()),
+                "worktree-diff"
+            )
+            .is_none()
+        );
+    }
 
     #[test]
     fn snapshot_builds_a_view_tree_without_accessing_live_ui_state() {

@@ -13,6 +13,8 @@ use crate::ui::theme;
 pub enum DetailTab {
     Info,
     GitLog,
+    GitChange,
+    GitStash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +34,9 @@ pub struct ContextMenu {
 }
 
 pub struct GitMasterApp {
+    pub worktree: Option<(PathBuf, Result<crate::worktree::Snapshot, String>)>,
+    pub worktree_task: Option<Task<()>>,
+    pub worktree_loading: bool,
     pub selected_commit: Option<(PathBuf, String)>,
     pub commit_text: Option<Result<String, String>>,
     pub commit_task: Option<Task<()>>,
@@ -73,6 +78,9 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            worktree: None,
+            worktree_task: None,
+            worktree_loading: false,
             selected_commit: None,
             commit_text: None,
             commit_task: None,
@@ -384,6 +392,8 @@ impl GitMasterApp {
                 match tab.as_str() {
                     "info" => self.set_tab(DetailTab::Info),
                     "log" => self.set_tab(DetailTab::GitLog),
+                    "change" => self.set_tab(DetailTab::GitChange),
+                    "stash" => self.set_tab(DetailTab::GitStash),
                     _ => {}
                 }
                 None

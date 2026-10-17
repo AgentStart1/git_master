@@ -146,15 +146,28 @@ fn execute_document(
             }
             Action::Unstage(path) => {
                 let tree = head_tree(&repo)?;
+                let mut options = StatusOptions::new();
+                options.renames_head_to_index(true);
+                let renamed_from = repo.statuses(Some(&mut options))?.iter().find_map(|entry| {
+                    let delta = entry.head_to_index()?;
+                    (entry.status().contains(git2::Status::INDEX_RENAMED)
+                        && delta.new_file().path() == Some(path.as_path()))
+                    .then(|| delta.old_file().path().map(Path::to_path_buf))
+                    .flatten()
+                });
                 let mut index = repo.index()?;
                 let mut original = git2::Index::new()?;
                 if let Some(tree) = tree {
                     original.read_tree(&tree)?;
                 }
-                if let Some(entry) = original.get_path(path, 0) {
-                    index.add(&entry)?;
-                } else {
-                    index.remove_path(path)?;
+                // A staged rename is one user action involving two index paths.
+                // Restore both sides without changing either working-tree file.
+                for path in std::iter::once(path.as_path()).chain(renamed_from.as_deref()) {
+                    if let Some(entry) = original.get_path(path, 0) {
+                        index.add(&entry)?;
+                    } else {
+                        index.remove_path(path)?;
+                    }
                 }
                 index.write()?;
             }
@@ -307,7 +320,9 @@ fn head_tree(repo: &Repository) -> Result<Option<git2::Tree<'_>>, git2::Error> {
 pub fn load(path: &Path) -> Result<Snapshot, String> {
     let mut repo = Repository::open(path).map_err(|e| e.to_string())?;
     let mut opts = StatusOptions::new();
-    opts.include_untracked(true).recurse_untracked_dirs(true);
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true);
     let changes = repo
         .statuses(Some(&mut opts))
         .map_err(|e| e.to_string())?
@@ -330,13 +345,26 @@ pub fn load(path: &Path) -> Result<Snapshot, String> {
                     | git2::Status::CONFLICTED,
             );
             Ok(Change {
-                path: entry
-                    .path()
-                    .map_err(|_| {
-                        "A changed path is not valid UTF-8; use Git CLI for this repository"
-                            .to_string()
-                    })?
-                    .into(),
+                path: {
+                    let path = if status.contains(git2::Status::INDEX_RENAMED) {
+                        entry
+                            .head_to_index()
+                            .and_then(|delta| delta.new_file().path().map(Path::to_path_buf))
+                    } else {
+                        Some(PathBuf::from(entry.path().map_err(|_| {
+                            "A changed path is not valid UTF-8; use Git CLI for this repository"
+                                .to_string()
+                        })?))
+                    }
+                    .ok_or_else(|| "Changed file path is unavailable".to_string())?;
+                    if path.to_str().is_none() {
+                        return Err(
+                            "A changed path is not valid UTF-8; use Git CLI for this repository"
+                                .to_string(),
+                        );
+                    }
+                    path
+                },
                 status: {
                     let mut labels = Vec::new();
                     if status.contains(git2::Status::CONFLICTED) {
@@ -474,6 +502,34 @@ mod tests {
         );
 
         assert!(preview.contains("Staged\nNo changes."));
+    }
+
+    #[test]
+    fn unstage_rename_restores_both_index_paths_and_preserves_new_work() {
+        let f = Fixture::new(true);
+        std::fs::rename(f.0.join("tracked.txt"), f.0.join("renamed.txt")).unwrap();
+        f.run(Action::Stage("tracked.txt".into()));
+        f.run(Action::Stage("renamed.txt".into()));
+        let snapshot = load(&f.0).unwrap();
+        assert_eq!(snapshot.changes.len(), 1);
+        assert_eq!(snapshot.changes[0].path, PathBuf::from("renamed.txt"));
+        assert!(snapshot.changes[0].status.contains("Renamed"));
+        std::fs::write(f.0.join("renamed.txt"), "newer working edit\n").unwrap();
+        f.run(Action::Unstage("renamed.txt".into()));
+        let repo = Repository::open(&f.0).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert_eq!(
+            repo.diff_tree_to_index(Some(&tree), None, None)
+                .unwrap()
+                .deltas()
+                .len(),
+            0
+        );
+        assert!(!f.0.join("tracked.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(f.0.join("renamed.txt")).unwrap(),
+            "newer working edit\n"
+        );
     }
 
     #[test]

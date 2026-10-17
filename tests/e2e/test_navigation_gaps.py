@@ -72,6 +72,8 @@ def test_special_file_preview_stage_unstage(app_factory, isolated_git, kind):
     app.wait(lambda t: app.idle(t) and "Git operation complete" in text(t), "unstage completed")
     assert (repo / relative).read_bytes() == before
     assert relative not in git(repo, "diff", "--cached", "--name-only", "-z").split("\0")
+    if kind == "renamed":
+        assert git(repo, "diff", "--cached", "--name-only") == "", "unstage rename must restore both index paths"
 
 
 @pytest.mark.p1

@@ -380,6 +380,10 @@ impl TestViewTreeSnapshot {
                     ViewNode::new("text")
                         .with_text(&format!("stash@{{{}}} {}", entry.index, entry.message)),
                 );
+                node = node.with_child(button(
+                    &format!("stash-select-{id}"),
+                    &format!("stash@{{{}}} {}", entry.index, entry.message),
+                ));
                 for (action, label) in [
                     ("show", "View"),
                     ("apply", "Apply"),
@@ -682,7 +686,11 @@ mod tests {
                     staged: true,
                     unstaged: true,
                 }],
-                stashes: vec![],
+                stashes: vec![crate::worktree::Stash {
+                    index: 0,
+                    oid: git2::Oid::ZERO_SHA1,
+                    message: "Saved edits".into(),
+                }],
                 diff: "+preview".into(),
             }),
         ));
@@ -699,6 +707,17 @@ mod tests {
             find(&tree, "worktree-diff").unwrap().text.as_deref(),
             Some("+preview")
         );
+        let stash_tree = snapshot.build_worktree_node(true, &HashMap::new());
+        for action in ["select", "show", "apply", "pop", "drop"] {
+            assert!(
+                find(
+                    &stash_tree,
+                    &format!("stash-{action}-{}", git2::Oid::ZERO_SHA1)
+                )
+                .unwrap()
+                .interactive
+            );
+        }
         snapshot.busy = true;
         let tree = snapshot.build_worktree_node(false, &HashMap::new());
         assert!(!find(&tree, "change-stage-0").unwrap().interactive);

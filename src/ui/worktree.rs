@@ -209,11 +209,12 @@ impl GitMasterApp {
                     .items_center()
                     .gap(px(8.0))
                     .text_sm()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(format!("stash@{{{}}} {}", entry.index, entry.message)),
-                    )
+                    .child(div().flex_1().child(self.worktree_button(
+                        format!("stash-select-{id}"),
+                        &format!("stash@{{{}}} {}", entry.index, entry.message),
+                        Action::ShowStash(id),
+                        cx,
+                    )))
                     .child(self.worktree_button(
                         format!("stash-show-{id}"),
                         "View",
@@ -291,7 +292,9 @@ impl GitMasterApp {
                     .p(px(8.0))
                     .bg(rgb(theme::BG_SURFACE))
                     .text_sm()
-                    .child(snapshot.diff.clone()),
+                    .child(if snapshot.diff.is_empty() && stash {
+                        "Select a stash to view its saved files and differences. Apply keeps the stash; Pop applies and removes it.".to_owned()
+                    } else { snapshot.diff.clone() }),
             )
             .into_any_element()
     }

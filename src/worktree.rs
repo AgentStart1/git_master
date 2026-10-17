@@ -129,16 +129,7 @@ fn execute(path: &Path, action: &Action) -> Result<String, String> {
                 repo.stash_save2(&signature, None, Some(git2::StashFlags::INCLUDE_UNTRACKED))?;
             }
             Action::Apply(oid) | Action::Pop(oid) | Action::Drop(oid) => {
-                let mut found = None;
-                repo.stash_foreach(|i, _, id| {
-                    if id == oid {
-                        found = Some(i);
-                    }
-                    true
-                })?;
-                let index = found.ok_or_else(|| {
-                    git2::Error::from_str("Stash no longer exists; refresh and retry")
-                })?;
+                let index = stash_index(&mut repo, *oid)?;
                 match action {
                     Action::Apply(_) => repo.stash_apply(index, None)?,
                     Action::Pop(_) => repo.stash_pop(index, None)?,
@@ -147,17 +138,43 @@ fn execute(path: &Path, action: &Action) -> Result<String, String> {
                 }
             }
             Action::ShowStash(oid) => {
+                let index = stash_index(&mut repo, *oid)?;
                 let commit = repo.find_commit(*oid)?;
-                let base = commit.parent(0)?.tree()?;
-                let tree = commit.tree()?;
-                let mut text = patch(repo.diff_tree_to_tree(Some(&base), Some(&tree), None)?)?;
+                let base_commit = commit.parent(0)?;
+                let base = base_commit.tree()?;
+                let staged = commit.parent(1)?.tree()?;
+                let working = commit.tree()?;
+                let author = commit.author();
+                let time = commit.time();
+                let offset = chrono::FixedOffset::east_opt(time.offset_minutes() * 60)
+                    .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
+                let date = chrono::DateTime::from_timestamp(time.seconds(), 0)
+                    .map(|date| date.with_timezone(&offset).to_rfc3339())
+                    .unwrap_or_else(|| "Unknown".into());
+                let mut text = format!(
+                    "stash@{{{index}}}\nCommit: {oid}\nAuthor: {}\nDate: {date}\nBase: {}\n\n{}\n",
+                    author.name().unwrap_or("Unknown"),
+                    base_commit.id(),
+                    commit.message().unwrap_or("(No message)"),
+                );
+                // The index parent preserves staged edits that a combined diff can hide.
+                append_stash_section(
+                    &mut text,
+                    "Staged changes",
+                    repo.diff_tree_to_tree(Some(&base), Some(&staged), None)?,
+                )?;
+                append_stash_section(
+                    &mut text,
+                    "Working tree changes",
+                    repo.diff_tree_to_tree(Some(&staged), Some(&working), None)?,
+                )?;
                 if commit.parent_count() > 2 {
                     let untracked = commit.parent(2)?.tree()?;
-                    text.push_str(&patch(repo.diff_tree_to_tree(
-                        None,
-                        Some(&untracked),
-                        None,
-                    )?)?);
+                    append_stash_section(
+                        &mut text,
+                        "Untracked files",
+                        repo.diff_tree_to_tree(None, Some(&untracked), None)?,
+                    )?;
                 }
                 return Ok(text);
             }
@@ -166,6 +183,54 @@ fn execute(path: &Path, action: &Action) -> Result<String, String> {
     })();
     result.map_err(|e| e.to_string())
 }
+fn stash_index(repo: &mut Repository, oid: Oid) -> Result<usize, git2::Error> {
+    let mut found = None;
+    repo.stash_foreach(|index, _, id| {
+        if *id == oid {
+            found = Some(index);
+            false
+        } else {
+            true
+        }
+    })?;
+    found.ok_or_else(|| git2::Error::from_str("Stash no longer exists; refresh and retry"))
+}
+
+fn append_stash_section(
+    text: &mut String,
+    title: &str,
+    diff: git2::Diff<'_>,
+) -> Result<(), git2::Error> {
+    text.push_str(&format!("\n{title}\n"));
+    if diff.deltas().len() == 0 {
+        text.push_str("(none)\n");
+        return Ok(());
+    }
+    let stats = diff.stats()?;
+    text.push_str(&format!(
+        "{} files changed, {} insertions(+), {} deletions(-)\n",
+        stats.files_changed(),
+        stats.insertions(),
+        stats.deletions()
+    ));
+    // Cap the file summary as well as the patch so huge stashes remain readable.
+    for delta in diff.deltas().take(200) {
+        let path = delta.new_file().path().or_else(|| delta.old_file().path());
+        text.push_str(&format!(
+            "  {:?} {}\n",
+            delta.status(),
+            path.map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(unknown path)".into())
+        ));
+    }
+    if diff.deltas().len() > 200 {
+        text.push_str("  [File list limited to 200 entries]\n");
+    }
+    text.push('\n');
+    text.push_str(&patch(diff)?);
+    Ok(())
+}
+
 fn head_tree(repo: &Repository) -> Result<Option<git2::Tree<'_>>, git2::Error> {
     match repo.head() {
         Ok(head) => Ok(Some(head.peel_to_tree()?)),
@@ -428,6 +493,41 @@ mod tests {
         assert!(f.run(Action::Pop(new_id)).stashes.is_empty());
         assert!(execute(&f.0, &Action::Apply(id)).is_err());
     }
+    #[test]
+    fn stash_preview_preserves_staged_changes_hidden_by_a_combined_diff() {
+        let f = Fixture::new(true);
+        std::fs::write(f.0.join("tracked.txt"), "staged-only-version\n").unwrap();
+        f.run(Action::Stage("tracked.txt".into()));
+        std::fs::write(f.0.join("tracked.txt"), "base\n").unwrap();
+        std::fs::write(f.0.join("binary.dat"), [0, 1, 2, 0]).unwrap();
+        let saved = f.run(Action::SaveStash);
+        let before: Vec<_> = saved
+            .changes
+            .iter()
+            .map(|change| (change.path.clone(), change.status.clone()))
+            .collect();
+        let id = saved.stashes[0].oid;
+        let preview = f.run(Action::ShowStash(id)).diff;
+        assert!(preview.contains(&format!("Commit: {id}")));
+        assert!(preview.contains("Author: Git Master Tests"));
+        assert!(preview.contains("Date:") && preview.contains("Base:"));
+        let (_, staged) = preview.split_once("Staged changes\n").unwrap();
+        let (staged, working) = staged.split_once("Working tree changes\n").unwrap();
+        assert!(staged.contains("+staged-only-version"));
+        assert!(working.contains("-staged-only-version") && working.contains("+base"));
+        let untracked = preview.split_once("Untracked files\n").unwrap().1;
+        assert!(untracked.contains("binary.dat") && untracked.contains("1 files changed"));
+        let after: Vec<_> = f
+            .run(Action::Refresh)
+            .changes
+            .iter()
+            .map(|change| (change.path.clone(), change.status.clone()))
+            .collect();
+        assert_eq!(before, after);
+        f.run(Action::Drop(id));
+        assert!(execute(&f.0, &Action::ShowStash(id)).is_err());
+    }
+
     #[test]
     fn failed_pop_preserves_stash_and_local_changes() {
         let f = Fixture::new(true);

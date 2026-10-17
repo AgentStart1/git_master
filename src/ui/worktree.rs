@@ -131,6 +131,8 @@ impl GitMasterApp {
                 this.busy = false;
                 if answer == Ok(0) && this.selected_remote_action_target().is_some_and(|(_, _, current, selected, _)| current == path && selected == selection) {
                     this.run_worktree(Action::Drop(oid), cx);
+                } else {
+                    this.set_status("Stash deletion cancelled");
                 }
                 cx.notify();
             }).ok();

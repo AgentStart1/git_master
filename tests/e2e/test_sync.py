@@ -1,5 +1,5 @@
 import pytest
-from driver import commit_all, find, git, make_repo, text, wait_for
+from driver import commit_all, find, git, make_repo, status, text, wait_for
 
 
 def remote_fixture(isolated_git):
@@ -75,7 +75,7 @@ def test_reset_confirmation_and_dirty_tree_protection(app_factory, isolated_git,
         assert git(repo, "rev-parse", "HEAD").strip() == original
         assert (repo / "tracked.txt").read_text(encoding="utf-8") == "do not discard this edit\n"
         assert (repo / "outgoing.txt").exists()
-        assert "failed" in text(app.tree()).lower()
+        assert "failed" in status(app.tree()).lower()
     else:
         assert git(repo, "rev-parse", "HEAD").strip() == expected_remote
         assert not (repo / "outgoing.txt").exists()
@@ -95,7 +95,7 @@ def test_fetch_all_continues_after_remote_failure(app_factory, isolated_git):
     (repo / "local.txt").write_text("keep local untracked file\n", encoding="utf-8")
     app = app_factory(root)
     app.click("fetch-all-btn")
-    app.wait(lambda tree: app.idle(tree) and "failed" in text(tree).lower(), "batch completion with reported failure")
+    app.wait(lambda tree: app.idle(tree) and "failed" in status(tree).lower(), "batch completion with reported failure")
     for path in (repo, second):
         assert git(path, "rev-parse", "origin/main").strip() == expected
     assert (repo / "local.txt").read_text(encoding="utf-8") == "keep local untracked file\n"

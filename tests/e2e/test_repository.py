@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from driver import commit_all, find, git, make_repo, text, walk
+from driver import commit_all, find, git, make_repo, status, text, walk
 
 
 @pytest.mark.p1
@@ -110,7 +110,7 @@ def test_branch_checkout_and_unmerged_deletion_preserve_data(app_factory, isolat
     app.select(0, repo)
     app.tab("log")
     app.click("log-checkout-feature")
-    app.wait(lambda tree: app.idle(tree) and "failed" in text(tree).lower(), "checkout refuses overlapping changes")
+    app.wait(lambda tree: app.idle(tree) and "failed" in status(tree).lower(), "checkout refuses overlapping changes")
     assert git(repo, "branch", "--show-current").strip() == "main"
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "unsaved main work\n"
     app.click("log-delete-feature")
@@ -118,6 +118,7 @@ def test_branch_checkout_and_unmerged_deletion_preserve_data(app_factory, isolat
     assert git(repo, "rev-parse", "--verify", "feature").strip()
     app.click("log-delete-feature")
     app.prompt(True)
+    assert "not fully merged" in status(app.tree()).lower()
     assert git(repo, "rev-parse", "--verify", "feature").strip()
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "unsaved main work\n"
 

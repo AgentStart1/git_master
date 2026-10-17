@@ -62,6 +62,8 @@ pub struct GitMasterApp {
     pub loading_detail: bool,
     pub context_menu: Option<ContextMenu>,
     pub status_message: Option<String>,
+    #[cfg(feature = "test-rpc")]
+    pub status_revision: u64,
     pub busy: bool,
     pub scan_task: Option<Task<()>>,
     pub detail_task: Option<Task<()>>,
@@ -108,6 +110,8 @@ impl GitMasterApp {
             loading_detail: false,
             context_menu: None,
             status_message: None,
+            #[cfg(feature = "test-rpc")]
+            status_revision: 0,
             busy: false,
             scan_task: None,
             detail_task: None,
@@ -253,6 +257,10 @@ impl GitMasterApp {
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
+        #[cfg(feature = "test-rpc")]
+        {
+            self.status_revision += 1;
+        }
         self.status_message = Some(msg.into());
     }
 

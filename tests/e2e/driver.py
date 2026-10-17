@@ -161,7 +161,24 @@ class App:
 
     def click(self, node_id, *, button="left"):
         import pyautogui
-        pyautogui.click(*self.point(node_id), button=button)
+        position = self.point(node_id)
+        before = self.tree()
+        pyautogui.click(*position, button=button)
+        if button == "left" and self.is_operation(node_id, before):
+            self.wait_completion(before["state"]["status_revision"])
+
+    @staticmethod
+    def is_operation(node_id, tree):
+        if node_id in ("fetch-all-btn", "switch-all-main-btn"):
+            return find(tree, "repo-0") is not None
+        return node_id == "worktree-refresh" or node_id == "stash-save" or node_id.startswith((
+            "change-stage-", "change-unstage-", "change-diff-", "stash-show-", "stash-select-",
+            "stash-apply-", "stash-pop-", "log-checkout-")) or (
+            node_id.startswith("log-remote-") and node_id.endswith(("-fetch", "-pull", "-push")))
+
+    def wait_completion(self, revision):
+        return self.wait(lambda tree: self.idle(tree) and tree["state"]["status_revision"] > revision,
+            "new operation completion (not a previous status)")
 
     def drag(self, node_id, dx, dy, *, fraction=(0.5, 0.5)):
         import pyautogui
@@ -184,14 +201,19 @@ class App:
         return self.wait(lambda tree: self.idle(tree) and tree["state"]["tab"] == name, f"tab {name}")
 
     def change(self, repo, relative, action):
+        assert Path(self.tree()["state"]["path"]).resolve() == Path(repo).resolve(), "wrong repository selected"
         tree = self.wait(lambda tree: self.idle(tree) and any(node.get("state", {}).get("path") == relative for node in walk(tree)), f"file row {relative}")
         entry = next(node["state"] for node in walk(tree) if node.get("state", {}).get("path") == relative)
         self.click(f"change-{action}-{entry['index']}")
 
     def prompt(self, accept):
         tree = self.wait(lambda tree: find(tree, "test-prompt"), "confirmation dialog")
+        revision = tree["state"]["status_revision"]
         self.click(f"test-prompt-answer-{0 if accept else 1}")
-        return self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
+        result = self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
+        if accept:
+            return self.wait_completion(revision)
+        return result
 
     def save_failure(self):
         try:

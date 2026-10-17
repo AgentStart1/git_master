@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from driver import commit_all, find, git, make_repo, text, wait_for, walk
+from driver import commit_all, find, git, make_repo, status, text, wait_for, walk
 
 
 def worktree(app_factory, isolated_git, *, commit=True):
@@ -122,6 +122,6 @@ def test_conflicting_stash_restore_keeps_stash_and_local_edits(app_factory, isol
     app.select(0, repo)
     app.tab("stash")
     app.click(f"stash-{operation}-{oid}")
-    app.wait(lambda tree: app.idle(tree) and "failed" in text(tree).lower(), "safe restore failure")
+    app.wait(lambda tree: app.idle(tree) and "failed" in status(tree).lower(), "safe restore failure")
     assert git(repo, "rev-parse", "refs/stash").strip() == oid
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "precious local edit\n"

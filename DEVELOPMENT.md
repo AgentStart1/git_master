@@ -91,6 +91,10 @@ The native folder-picker case runs on Windows and is explicitly skipped in Linux
 
 ## Test observation and confirmation boundary
 
+Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmed destructive actions have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
+
+Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 42 desktop E2E cases and also run in CI.
+
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 
 For portable confirmation testing, `GIT_MASTER_TEST_PROMPTS=1` installs a custom GPUI prompt renderer **only in a test-rpc build**. Application code still requests and awaits the normal prompt; tests click Confirm/Cancel buttons and exercise the real approval callbacks. The normal build keeps native system dialogs. These tests cover confirmation behavior, not native Windows/macOS dialog appearance, accessibility, or OS input permissions. Screenshots on failure are diagnostics, not pixel-baseline visual regression tests.

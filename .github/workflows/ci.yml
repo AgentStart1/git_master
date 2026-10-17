@@ -76,6 +76,9 @@ jobs:
       - name: Install E2E test dependencies
         run: python -m pip install -r tests/requirements.txt
 
+      - name: Test desktop driver acknowledgement safeguards
+        run: python -m pytest tests/unit -q
+
       - name: Build (test-rpc)
         run: cargo build --features test-rpc
 

@@ -47,9 +47,9 @@ def isolated_git(tmp_path, monkeypatch):
 @pytest.fixture
 def app_factory(binary, request, isolated_git):
     apps = []
-    def launch(workspace):
+    def launch(workspace, **options):
         folder = Path(request.config.getoption("--artifacts")) / request.node.name
-        app = App(binary, workspace, folder, os.environ.copy())
+        app = App(binary, workspace, folder, os.environ.copy(), **options)
         apps.append(app)
         return app
     yield launch

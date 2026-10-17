@@ -32,11 +32,12 @@ def test_swallowed_operation_click_cannot_reuse_previous_status(monkeypatch, mes
         app.click("stash-save")
 
 
-def test_confirmation_disappearing_without_operation_does_not_pass():
+@pytest.mark.parametrize("accept", [True, False])
+def test_confirmation_disappearing_without_operation_does_not_pass(accept):
     app = observed_app(snapshot("Git operation failed: earlier failure", prompt=True))
     app.click = lambda node_id: setattr(app, "tree", lambda: snapshot("Git operation failed: earlier failure"))
     with pytest.raises(AssertionError, match="new operation completion"):
-        app.prompt(True)
+        app.prompt(accept)
 
 
 def test_new_status_while_busy_is_not_completion():

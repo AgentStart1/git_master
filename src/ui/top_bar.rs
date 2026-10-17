@@ -6,6 +6,24 @@ use crate::git_ops;
 use crate::ui::theme;
 
 impl GitMasterApp {
+    pub(crate) fn start_scan(&mut self, path: std::path::PathBuf, cx: &mut Context<'_, Self>) {
+        self.begin_scan(path.clone());
+        cx.notify();
+        self.scan_task = Some(cx.spawn(async move |entity, cx| {
+            let scan_path = path.clone();
+            let repos = cx
+                .background_executor()
+                .spawn(async move { git_ops::scan_repos(&scan_path) })
+                .await;
+            entity
+                .update(cx, |this, cx| {
+                    this.apply_scan(&path, repos);
+                    cx.notify();
+                })
+                .ok();
+        }));
+    }
+
     fn run_batch(&mut self, action: crate::batch_ops::BatchAction, cx: &mut Context<'_, Self>) {
         if self.busy || self.scanning || self.repos.is_empty() {
             return;
@@ -118,26 +136,14 @@ impl GitMasterApp {
                     multiple: false,
                     prompt: Some("Select parent directory".into()),
                 });
-                this.scan_task =
+                this.directory_prompt_task =
                     Some(cx.spawn(async move |entity: WeakEntity<GitMasterApp>, cx| {
                         if let Ok(Ok(Some(paths))) = receiver.await
                             && let Some(path) = paths.into_iter().next()
                         {
                             entity
                                 .update(cx, |this, cx| {
-                                    this.begin_scan(path.clone());
-                                    cx.notify();
-                                })
-                                .ok();
-                            let scan_path = path.clone();
-                            let repos = cx
-                                .background_executor()
-                                .spawn(async move { git_ops::scan_repos(&scan_path) })
-                                .await;
-                            entity
-                                .update(cx, |this, cx| {
-                                    this.apply_scan(&path, repos);
-                                    cx.notify();
+                                    this.start_scan(path, cx);
                                 })
                                 .ok();
                         }

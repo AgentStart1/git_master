@@ -43,7 +43,7 @@ def wait_for(predicate, *, timeout=15, description="condition"):
 
 
 class App:
-    def __init__(self, binary, workspace, artifacts, env):
+    def __init__(self, binary, workspace, artifacts, env, *, wait_scan=True):
         self.artifacts = artifacts
         artifacts.mkdir(parents=True, exist_ok=True)
         self.output = (artifacts / "app.log").open("wb")
@@ -65,7 +65,8 @@ class App:
             # Xvfb has no window manager to focus new windows. GPUI can keep an
             # unfocused window idle, so focus before waiting for painted controls.
             self.window_geometry()
-            self.wait(lambda tree: str(workspace) in text(tree) and not tree["state"]["scanning"], "workspace scan")
+            if wait_scan:
+                self.wait(lambda tree: str(workspace) in text(tree) and not tree["state"]["scanning"], "workspace scan")
         except BaseException:
             self.save_failure()
             self.close()
@@ -212,10 +213,8 @@ class App:
         self.click(f"test-prompt-answer-{0 if accept else 1}")
         if not await_operation:
             return self.wait(lambda tree: not find(tree, "test-prompt"), "answered confirmation")
-        result = self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
-        if accept:
-            return self.wait_completion(revision)
-        return result
+        self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
+        return self.wait_completion(revision)
 
     def save_failure(self):
         try:

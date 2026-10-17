@@ -68,11 +68,14 @@ pub struct GitMasterApp {
     pub status_revision: u64,
     pub busy: bool,
     pub scan_task: Option<Task<()>>,
+    pub directory_prompt_task: Option<Task<()>>,
     pub detail_task: Option<Task<()>>,
     pub remote_action_prompt_task: Option<Task<()>>,
     pub operation_task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
     pub test_view_tree_task: Option<Task<()>>,
+    #[cfg(feature = "test-rpc")]
+    pub test_view_revision: u64,
     #[cfg(feature = "test-rpc")]
     pub bounds_registry: crate::test_rpc::tracked::BoundsRegistry,
     #[cfg(feature = "test-rpc")]
@@ -118,11 +121,14 @@ impl GitMasterApp {
             status_revision: 0,
             busy: false,
             scan_task: None,
+            directory_prompt_task: None,
             detail_task: None,
             remote_action_prompt_task: None,
             operation_task: None,
             #[cfg(feature = "test-rpc")]
             test_view_tree_task: None,
+            #[cfg(feature = "test-rpc")]
+            test_view_revision: 0,
             #[cfg(feature = "test-rpc")]
             bounds_registry: Default::default(),
             #[cfg(feature = "test-rpc")]
@@ -459,13 +465,13 @@ impl GitMasterApp {
 
     #[cfg(feature = "test-rpc")]
     pub fn schedule_test_view_tree_publish(&mut self, cx: &mut Context<'_, Self>) {
+        self.test_view_revision += 1;
+        let revision = self.test_view_revision;
         let snapshot = self.test_view_tree_snapshot();
         let provider = self.tree_provider.clone();
         self.test_view_tree_task = Some(cx.background_executor().spawn(async move {
             let tree = snapshot.build();
-            if let Ok(mut guard) = provider.lock() {
-                *guard = Some(tree);
-            }
+            crate::test_rpc::server::publish_tree(&provider, revision, tree);
         }));
     }
 }

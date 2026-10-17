@@ -113,6 +113,7 @@ pub struct TestViewTreeSnapshot {
     context_menu: Option<ContextMenu>,
     status_message: Option<String>,
     status_revision: u64,
+    view_revision: u64,
     worktree: Option<(
         std::path::PathBuf,
         Result<crate::worktree::Snapshot, String>,
@@ -143,6 +144,7 @@ impl GitMasterApp {
             context_menu: self.context_menu.clone(),
             status_message: self.status_message.clone(),
             status_revision: self.status_revision,
+            view_revision: self.test_view_revision,
             worktree: self.worktree.clone(),
             worktree_loading: self.worktree_loading,
             busy: self.busy,
@@ -227,6 +229,7 @@ impl TestViewTreeSnapshot {
         root.state = Some(serde_json::json!({
             "busy": self.busy, "loading_detail": self.loading_detail,
             "status_revision": self.status_revision,
+            "view_revision": self.view_revision,
             "scanning": self.scanning, "worktree_loading": self.worktree_loading,
             "path": self.detail.as_ref().map(|detail| &detail.path),
             "tab": match self.active_tab { DetailTab::Info => "info", DetailTab::GitLog => "log", DetailTab::GitChange => "change", DetailTab::GitStash => "stash" },

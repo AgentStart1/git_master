@@ -9,6 +9,47 @@ use super::view_tree::ViewNode;
 
 pub type ViewTreeProvider = Arc<Mutex<Option<ViewNode>>>;
 
+pub fn publish_tree(provider: &ViewTreeProvider, revision: u64, tree: ViewNode) {
+    if let Ok(mut current) = provider.lock() {
+        let previous = current
+            .as_ref()
+            .and_then(|node| node.state.as_ref())
+            .and_then(|state| state.get("view_revision"))
+            .and_then(Value::as_u64);
+        // Cancellation cannot interrupt a snapshot build already running on a
+        // worker. Compare under the publication lock so an older build cannot win.
+        if previous.is_none_or(|previous| revision > previous) {
+            *current = Some(tree);
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::app_state::GitMasterApp;
+
+    #[test]
+    fn late_and_duplicate_snapshots_cannot_replace_newer_completion() {
+        let provider = ViewTreeProvider::default();
+        let mut app = GitMasterApp::new();
+        app.test_view_revision = 2;
+        app.set_status("retry completed");
+        publish_tree(&provider, 2, app.test_view_tree_snapshot().build());
+        app.test_view_revision = 1;
+        app.busy = true;
+        app.set_status("older failure");
+        publish_tree(&provider, 1, app.test_view_tree_snapshot().build());
+        app.test_view_revision = 2;
+        publish_tree(&provider, 2, app.test_view_tree_snapshot().build());
+        let current = provider.lock().unwrap();
+        let state = current.as_ref().unwrap().state.as_ref().unwrap();
+        assert_eq!(state["view_revision"], 2);
+        assert_eq!(state["busy"], false);
+        assert_eq!(state["status_revision"], 1);
+    }
+}
+
 #[derive(Debug)]
 pub enum TestCommand {
     SelectRepo(usize),

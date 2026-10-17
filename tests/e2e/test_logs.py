@@ -89,7 +89,9 @@ def test_large_logs_are_bounded_and_really_scroll(app_factory, isolated_git):
     assert len(content.splitlines()) <= 2000
     assert "ENTRY 0:" not in content
     assert find(tree, "logs-panel")["state"]["truncated"]
-    assert not end_visible(tree)
+    tree = logs.wait(end_visible, "newest log initially followed")
+    logs.scroll("logs-content", 100)
+    tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "upward wheel pauses follow")
     before = find(tree, "logs-end")["bounds"]["y"]
     for _ in range(25):
         if end_visible(tree):
@@ -166,3 +168,104 @@ def test_closing_loading_logs_does_not_reopen_on_completion(app_factory, isolate
     logs.click("logs-close")
     closed(app)
     assert Path(app.tree()["state"]["path"]).resolve() == repo.resolve()
+
+
+def log_state(tree):
+    return find(tree, "logs-panel")["state"]
+
+
+def append_lines(path, lines):
+    with path.open("a", encoding="utf-8") as log:
+        log.write(lines)
+
+
+@pytest.mark.p1
+def test_logs_auto_refresh_follow_pause_and_resume(app_factory, isolated_git):
+    app, _ = setup(app_factory, isolated_git)
+    logs = open_logs(app)
+    tree = ready(logs, "Application started")
+    path = log_path(app, tree)
+    marker = "AUTO_FOLLOW_" + uuid.uuid4().hex
+    append_lines(path, "".join(f"reading entry {i}\n" for i in range(200)) + marker + "\n")
+    tree = ready(logs, marker)  # No Refresh click.
+    tree = logs.wait(end_visible, "automatic append followed into view")
+    assert log_state(tree)["following"]
+    logs.scroll("logs-content", 20)
+    tree = logs.wait(lambda t: not log_state(t)["following"] and not end_visible(t), "manual upward scroll pauses following")
+    original = find(tree, "logs-content")["text"]
+    original_y = find(tree, "logs-end")["bounds"]["y"]
+    completed = log_state(tree)["completed_reads"]
+    next_marker = "PAUSED_APPEND_" + uuid.uuid4().hex
+    append_lines(path, next_marker + "\n")
+    tree = logs.wait(lambda t: log_state(t)["pending"] and log_state(t)["completed_reads"] > completed, "new logs read while follow paused")
+    assert find(tree, "logs-content")["text"] == original
+    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    screenshot(logs, "logs-follow-paused.png")
+    logs.click("logs-follow")
+    tree = ready(logs, next_marker)
+    tree = logs.wait(lambda t: log_state(t)["following"] and end_visible(t), "follow latest button resumes and scrolls")
+    assert not log_state(tree)["pending"]
+    logs.scroll("logs-content", 20)
+    logs.wait(lambda t: not log_state(t)["following"], "pause before natural scroll resume")
+    append_lines(path, "SCROLL_RESUME_" + next_marker + "\n")
+    logs.wait(lambda t: log_state(t)["pending"], "second append buffered")
+    logs.scroll("logs-content", -100)
+    tree = ready(logs, "SCROLL_RESUME_" + next_marker)
+    tree = logs.wait(lambda t: log_state(t)["following"] and end_visible(t), "scroll to bottom resumes latest")
+    screenshot(logs, "logs-follow-latest.png")
+
+
+@pytest.mark.p1
+def test_paused_logs_keep_position_when_bounded_tail_rolls(app_factory, isolated_git):
+    app, _ = setup(app_factory, isolated_git)
+    logs = open_logs(app)
+    tree = ready(logs, "Application started")
+    path = log_path(app, tree)
+    prefix = uuid.uuid4().hex
+    append_lines(path, "".join(f"ORIGINAL_{prefix}_{i}\n" for i in range(2100)))
+    tree = ready(logs, f"ORIGINAL_{prefix}_2099")
+    logs.wait(end_visible, "bounded initial tail followed")
+    logs.scroll("logs-content", 30)
+    tree = logs.wait(lambda t: not log_state(t)["following"], "paused bounded tail")
+    original = find(tree, "logs-content")["text"]
+    original_y = find(tree, "logs-end")["bounds"]["y"]
+    completed = log_state(tree)["completed_reads"]
+    append_lines(path, "".join(f"ROLLED_{prefix}_{i}\n" for i in range(2200)))
+    tree = logs.wait(lambda t: log_state(t)["pending"] and log_state(t)["completed_reads"] > completed, "rolled tail buffered")
+    assert find(tree, "logs-content")["text"] == original
+    assert abs(find(tree, "logs-end")["bounds"]["y"] - original_y) < 1
+    logs.click("logs-follow")
+    tree = ready(logs, f"ROLLED_{prefix}_2199")
+    tree = logs.wait(end_visible, "latest rolled tail followed")
+    assert "ORIGINAL_" + prefix not in find(tree, "logs-content")["text"]
+    assert len(find(tree, "logs-content")["text"].splitlines()) <= 2000
+
+
+@pytest.mark.p1
+def test_auto_refresh_failure_retains_content_and_recovers(app_factory, isolated_git, monkeypatch):
+    gate = isolated_git / "auto-error-gate"
+    monkeypatch.setenv("GIT_MASTER_TEST_LOGS_GATE", str(gate))
+    app, _ = setup(app_factory, isolated_git)
+    logs = open_logs(app)
+    tree = ready(logs, "Application started")
+    path = log_path(app, tree)
+    original = find(tree, "logs-content")["text"]
+    gate.mkdir()
+    try:
+        wait_for(lambda: (gate / "entered").exists(), description="automatic log read held")
+        path.unlink()
+        path.mkdir()
+    finally:
+        (gate / "release").touch()
+    try:
+        tree = logs.wait(lambda t: log_state(t)["refresh_error"] is not None, "automatic read error surfaced")
+        assert find(tree, "logs-content")["text"] == original
+        assert "Cannot read" in text(find(tree, "logs-refresh-error"))
+        assert 0 < find(tree, "logs-refresh-error")["bounds"]["height"] <= 24
+    finally:
+        path.rmdir()
+    marker = "AUTO_RECOVERED_" + uuid.uuid4().hex
+    path.write_text(marker + "\n", encoding="utf-8")
+    tree = ready(logs, marker)
+    assert log_state(tree)["refresh_error"] is None
+    assert log_state(tree)["following"]

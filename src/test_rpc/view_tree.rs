@@ -913,11 +913,13 @@ mod tests {
 }
 
 pub fn build_logs_tree(
-    state: &crate::log_viewer::State,
+    viewer: &crate::log_viewer::Viewer,
     reg: &HashMap<String, Bounds<Pixels>>,
     revision: u64,
+    completed_reads: u64,
 ) -> ViewNode {
     use crate::log_viewer::State;
+    let state = &viewer.state;
     let message = state.display_text();
     let phase = match state {
         State::Loading => "loading",
@@ -945,6 +947,7 @@ pub fn build_logs_tree(
     }
     for (id, enabled) in [
         ("logs-close", true),
+        ("logs-follow", true),
         ("logs-refresh", true),
         (
             "logs-copy",
@@ -957,6 +960,21 @@ pub fn build_logs_tree(
         } else {
             node
         });
+    }
+
+    if let Some(error) = &viewer.refresh_error {
+        panel = panel.with_child(
+            ViewNode::new("text")
+                .with_id("logs-refresh-error")
+                .with_text(error),
+        );
+    }
+
+    if let Some(state) = &mut panel.state {
+        state["following"] = serde_json::json!(viewer.following);
+        state["pending"] = serde_json::json!(viewer.pending.is_some());
+        state["refresh_error"] = serde_json::json!(viewer.refresh_error);
+        state["completed_reads"] = serde_json::json!(completed_reads);
     }
 
     fn attach(node: &mut ViewNode, reg: &HashMap<String, Bounds<Pixels>>) {

@@ -2,10 +2,15 @@ use gpui::*;
 
 use super::theme;
 use crate::app_state::GitMasterApp;
-use crate::log_viewer::{LogViewerHost, State};
+use crate::log_viewer::{LogViewerHost, State, Viewer};
 
 pub struct LogsWindow {
-    state: State,
+    viewer: Viewer,
+    scroll: ScrollHandle,
+    reading: bool,
+    manual_requested: bool,
+    completed_reads: u64,
+    poll_task: Option<Task<()>>,
     revision: u64,
     task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
@@ -69,7 +74,12 @@ impl GitMasterApp {
                     })
                     .detach();
                     let mut view = LogsWindow {
-                        state: State::Loading,
+                        viewer: Viewer::new(),
+                        scroll: ScrollHandle::new(),
+                        reading: false,
+                        manual_requested: false,
+                        completed_reads: 0,
+                        poll_task: None,
                         revision: 0,
                         task: None,
                         #[cfg(feature = "test-rpc")]
@@ -81,7 +91,20 @@ impl GitMasterApp {
                         #[cfg(feature = "test-rpc")]
                         publication_owner,
                     };
-                    view.refresh(cx);
+                    view.refresh(true, cx);
+                    view.poll_task = Some(cx.spawn(async move |entity, cx| {
+                        loop {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_secs(1))
+                                .await;
+                            if entity
+                                .update(cx, |this, cx| this.refresh(false, cx))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }));
                     view
                 })
             },
@@ -95,11 +118,15 @@ impl GitMasterApp {
 }
 
 impl LogsWindow {
-    fn refresh(&mut self, cx: &mut Context<'_, Self>) {
+    fn refresh(&mut self, manual: bool, cx: &mut Context<'_, Self>) {
+        if self.reading {
+            self.manual_requested |= manual;
+            return;
+        }
+        self.reading = true;
         self.revision += 1;
         let revision = self.revision;
-        self.state = State::Loading;
-        cx.notify();
+
         self.task = Some(cx.spawn(async move |entity, cx| {
             let result = cx
                 .background_executor()
@@ -110,11 +137,13 @@ impl LogsWindow {
                     if this.revision != revision {
                         return;
                     }
-                    this.state = match result {
-                        Ok(snapshot) => State::Ready(snapshot),
-                        Err(error) => State::Failed(error),
-                    };
+                    this.reading = false;
+                    this.completed_reads += 1;
+                    this.viewer.accept(result, manual);
                     cx.notify();
+                    if std::mem::take(&mut this.manual_requested) {
+                        this.refresh(true, cx);
+                    }
                 })
                 .ok();
         }));
@@ -132,7 +161,7 @@ impl LogsWindow {
     }
 
     pub(crate) fn render_logs(&self, cx: &mut Context<'_, Self>) -> AnyElement {
-        let state = &self.state;
+        let state = &self.viewer.state;
         let copy = matches!(state, State::Ready(snapshot) if !snapshot.text.is_empty());
         let mut toolbar = div()
             .flex()
@@ -164,6 +193,15 @@ impl LogsWindow {
                     }),
             );
         for (id, label, enabled) in [
+            (
+                "logs-follow",
+                if self.viewer.following {
+                    "Pause follow"
+                } else {
+                    "Follow latest"
+                },
+                true,
+            ),
             ("logs-refresh", "Refresh", true),
             ("logs-copy", "Copy displayed", copy),
             ("logs-close", "Close", true),
@@ -191,10 +229,18 @@ impl LogsWindow {
                         })
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| match id {
-                            "logs-refresh" => this.refresh(cx),
+                            "logs-follow" => {
+                                if this.viewer.following {
+                                    this.viewer.following = false;
+                                } else {
+                                    this.viewer.resume();
+                                }
+                                cx.notify();
+                            }
+                            "logs-refresh" => this.refresh(true, cx),
                             "logs-close" => window.remove_window(),
                             _ => {
-                                if let State::Ready(snapshot) = &this.state {
+                                if let State::Ready(snapshot) = &this.viewer.state {
                                     if !snapshot.text.is_empty() {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             snapshot.text.clone(),
@@ -225,6 +271,32 @@ impl LogsWindow {
                 .p(px(20.0))
                 .gap(px(12.0))
                 .child(toolbar)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(if self.viewer.following {
+                            theme::GREEN
+                        } else {
+                            theme::YELLOW
+                        }))
+                        .child(if self.viewer.following {
+                            "Auto refresh: 1s · Following latest"
+                        } else if self.viewer.pending.is_some() {
+                            "Auto refresh: 1s · Follow paused · New logs available"
+                        } else {
+                            "Auto refresh: 1s · Follow paused"
+                        }),
+                )
+                .children(self.viewer.refresh_error.as_ref().map(|error| {
+                    self.track(
+                        "logs-refresh-error",
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme::RED))
+                            .text_ellipsis()
+                            .child(format!("Refresh failed (retrying automatically): {error}")),
+                    )
+                }))
                 .children(notice.map(|message| {
                     div()
                         .text_xs()
@@ -240,6 +312,27 @@ impl LogsWindow {
                             .min_h(px(0.0))
                             .overflow_y_scroll()
                             .overflow_x_scroll()
+                            .track_scroll(&self.scroll)
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &ScrollWheelEvent, window, cx| {
+                                    let delta = event.delta.pixel_delta(px(16.0)).y;
+                                    if delta > px(0.0) {
+                                        this.viewer.following = false;
+                                        cx.notify();
+                                    } else if delta < px(0.0) {
+                                        // Read the handle after GPUI's default wheel listener moves it.
+                                        cx.defer_in(window, |this, _, cx| {
+                                            if this.scroll.max_offset().height
+                                                + this.scroll.offset().y
+                                                <= px(2.0)
+                                            {
+                                                this.viewer.resume();
+                                                cx.notify();
+                                            }
+                                        });
+                                    }
+                                },
+                            ))
                             .flex()
                             .flex_col()
                             .p(px(14.0))
@@ -274,6 +367,9 @@ impl Render for LogsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         #[cfg(feature = "test-rpc")]
         self.bounds_registry.borrow_mut().clear();
+        if self.viewer.following {
+            self.scroll.scroll_to_bottom();
+        }
         let panel = div()
             .size_full()
             .flex()
@@ -299,9 +395,10 @@ impl Render for LogsWindow {
                         }
                         this.view_revision += 1;
                         let tree = crate::test_rpc::view_tree::build_logs_tree(
-                            &this.state,
+                            &this.viewer,
                             &this.bounds_registry.borrow(),
                             this.view_revision,
+                            this.completed_reads,
                         );
                         crate::test_rpc::server::publish_tree(
                             &this.tree_provider,

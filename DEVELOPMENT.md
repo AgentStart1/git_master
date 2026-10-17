@@ -68,7 +68,7 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 
 ### Coverage audit additions
 
-The suite now has 69 cases: 26 P0 and 43 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+The suite now has 72 cases: 26 P0 and 46 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
 
 | Priority | Previously missing workflow | Assertions |
 |---|---|---|
@@ -85,7 +85,7 @@ The suite now has 69 cases: 26 P0 and 43 P1. The audit compared the worktree act
 | P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
 | P1 | Native workspace picker (Windows) | Cancel preserves selection; choosing another workspace clears old details and rescans |
 
-The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 67 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
+The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 70 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
 
 `GIT_MASTER_TEST_CONFIG_DIR` redirects libgit2's system/global/XDG/ProgramData configuration search paths in the test build before threads start. Git subprocesses separately use `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; both configuration readers must be isolated. Production builds do not honor the test-only setting.
 
@@ -109,7 +109,7 @@ Selection and workspace transitions invalidate read-request ownership. A complet
 
 Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmation and cancellation both have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
 
-Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 69 desktop E2E cases and also run in CI.
+Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 72 desktop E2E cases and also run in CI.
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 
@@ -132,3 +132,7 @@ Mutation verification: removing the worktree start-status update makes the Stage
 The independent application-log window has its own GPUI entity, request ownership and cancellable read task. `LogViewerHost` reads the current daily file off the UI thread and bounds snapshots to the latest 256 KiB and 2,000 lines. A missing file is an empty state; read errors can be retried. Closing releases the view and cancels publication, and reopening starts a fresh request. Existing log redaction stays at the writer.
 
 Four P1 desktop cases verify separate-window activation without changing the main selection, refresh and clipboard contents, bounded large-log scrolling using painted end-line bounds, missing/read-error recovery, and closing/reopening while a read is held. Windows also exercises native Alt+F4 closure. `GIT_MASTER_TEST_LOGS_GATE` controls the reader via the existing test-only worker gate. `get_logs_view_tree` exposes read-only snapshots after the log window paints; the driver selects windows by process ID plus exact title and uses each window's own bounds. Log fixtures assert paths stay inside isolated test state before changing files, and use unique refresh markers to reject stale snapshots.
+
+The log window polls once per second with at most one read in flight; manual refresh uses the same serialized read path. Polling does not replace content with a loading screen. The framework-independent Viewer model buffers successful snapshots while following is paused, including when the bounded tail rolls over. Resume adopts the latest buffer and requests bottom alignment during layout. Upward wheel input pauses immediately; downward input checks the real scroll handle after GPUI dispatch and resumes only at the bottom. Closing the window cancels both the timer and read publication. Automatic read errors retain the last readable snapshot and show a one-line retrying error; polling recovers without a click.
+
+Three additional P1 desktop cases append real log entries without clicking Refresh, assert the painted final line is visible when following, verify upward scrolling freezes both content and position across completed reads and tail rollover, resume by button and wheel, and exercise an automatic read failure/recovery. A worker gate makes the failure setup deterministic. Two Viewer regressions cover buffering/rollover and automatic-error recovery independently of GPUI.

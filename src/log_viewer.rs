@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_LINES: usize = 2000;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub path: PathBuf,
     pub text: String,
     pub truncated: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
     Loading,
     Ready(Snapshot),
@@ -25,6 +25,58 @@ impl State {
             Self::Failed(error) => error,
             Self::Ready(snapshot) if snapshot.text.is_empty() => "No logs recorded today.",
             Self::Ready(snapshot) => &snapshot.text,
+        }
+    }
+}
+
+pub struct Viewer {
+    pub state: State,
+    pub following: bool,
+    pub pending: Option<Snapshot>,
+    pub refresh_error: Option<String>,
+}
+
+impl Viewer {
+    pub fn new() -> Self {
+        Self {
+            state: State::Loading,
+            following: true,
+            pending: None,
+            refresh_error: None,
+        }
+    }
+
+    pub fn accept(&mut self, result: Result<Snapshot, String>, manual: bool) {
+        match result {
+            Ok(snapshot) => {
+                self.refresh_error = None;
+                if self.following || !matches!(self.state, State::Ready(_)) {
+                    self.state = State::Ready(snapshot);
+                    self.pending = None;
+                } else {
+                    self.pending = match &self.state {
+                        State::Ready(current) if *current == snapshot => None,
+                        _ => Some(snapshot),
+                    };
+                }
+            }
+            Err(error) => {
+                if manual || !matches!(self.state, State::Ready(_)) {
+                    self.state = State::Failed(error);
+                    self.pending = None;
+                    self.refresh_error = None;
+                } else {
+                    // Keep readable content and the user's position on a polling error.
+                    self.refresh_error = Some(error);
+                }
+            }
+        }
+    }
+
+    pub fn resume(&mut self) {
+        self.following = true;
+        if let Some(snapshot) = self.pending.take() {
+            self.state = State::Ready(snapshot);
         }
     }
 }
@@ -80,6 +132,48 @@ fn read_tail(path: &Path) -> std::io::Result<Snapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot(text: &str) -> Snapshot {
+        Snapshot {
+            path: PathBuf::from("application.log"),
+            text: text.into(),
+            truncated: true,
+        }
+    }
+
+    #[test]
+    fn paused_reader_keeps_visible_content_until_resuming_even_when_tail_rolls() {
+        let mut viewer = Viewer::new();
+        viewer.accept(Ok(snapshot("old visible entry")), false);
+        viewer.following = false;
+        viewer.accept(Ok(snapshot("new tail without old entry")), false);
+        assert_eq!(viewer.state.display_text(), "old visible entry");
+        assert_eq!(
+            viewer.pending.as_ref().unwrap().text,
+            "new tail without old entry"
+        );
+        viewer.resume();
+        assert_eq!(viewer.state.display_text(), "new tail without old entry");
+        assert!(viewer.following && viewer.pending.is_none());
+    }
+
+    #[test]
+    fn automatic_failure_keeps_last_good_content_and_recovers() {
+        let mut viewer = Viewer::new();
+        viewer.accept(Ok(snapshot("last good entry")), false);
+        viewer.accept(Err("temporarily unavailable".into()), false);
+        assert_eq!(viewer.state.display_text(), "last good entry");
+        assert_eq!(
+            viewer.refresh_error.as_deref(),
+            Some("temporarily unavailable")
+        );
+        viewer.accept(Ok(snapshot("recovered entry")), false);
+        assert_eq!(viewer.state.display_text(), "recovered entry");
+        assert!(viewer.refresh_error.is_none());
+        viewer.accept(Err("manual failure".into()), true);
+        assert!(matches!(viewer.state, State::Failed(_)));
+        assert!(viewer.refresh_error.is_none());
+    }
 
     #[test]
     fn tail_bounds_large_logs_and_keeps_latest_entry() {

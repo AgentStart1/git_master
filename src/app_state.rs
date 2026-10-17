@@ -34,6 +34,8 @@ pub struct ContextMenu {
 }
 
 pub struct GitMasterApp {
+    #[cfg(feature = "test-rpc")]
+    pub test_prompt: crate::test_rpc::prompt::PromptState,
     pub worktree: Option<(PathBuf, Result<crate::worktree::Snapshot, String>)>,
     pub worktree_task: Option<Task<()>>,
     pub worktree_loading: bool,
@@ -78,6 +80,8 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "test-rpc")]
+            test_prompt: Default::default(),
             worktree: None,
             worktree_task: None,
             worktree_loading: false,
@@ -479,6 +483,7 @@ impl Render for GitMasterApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         #[cfg(feature = "test-rpc")]
         {
+            self.bounds_registry.borrow_mut().clear();
             cx.on_next_frame(window, |this, _window, cx| {
                 this.schedule_test_view_tree_publish(cx);
             });

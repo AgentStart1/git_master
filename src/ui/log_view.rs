@@ -25,34 +25,40 @@ impl GitMasterApp {
             .border_b_1()
             .border_color(rgb(theme::BORDER))
             .child(
-                div()
-                    .id("log-view-list")
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .bg(list_bg)
-                    .cursor_pointer()
-                    .text_xs()
-                    .child("List")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_log_view_mode(LogViewMode::List);
-                        cx.notify();
-                    })),
+                self.track(
+                    "log-view-list",
+                    div()
+                        .id("log-view-list")
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .bg(list_bg)
+                        .cursor_pointer()
+                        .text_xs()
+                        .child("List")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_log_view_mode(LogViewMode::List);
+                            cx.notify();
+                        })),
+                ),
             )
             .child(
-                div()
-                    .id("log-view-canvas")
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(6.0))
-                    .bg(canvas_bg)
-                    .cursor_pointer()
-                    .text_xs()
-                    .child("Canvas")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_log_view_mode(LogViewMode::Canvas);
-                        cx.notify();
-                    })),
+                self.track(
+                    "log-view-canvas",
+                    div()
+                        .id("log-view-canvas")
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .bg(canvas_bg)
+                        .cursor_pointer()
+                        .text_xs()
+                        .child("Canvas")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_log_view_mode(LogViewMode::Canvas);
+                            cx.notify();
+                        })),
+                ),
             );
 
         let remote_controls: Vec<AnyElement> = if let Some(detail) = self.detail.as_ref() {
@@ -203,36 +209,46 @@ impl GitMasterApp {
                         .flex()
                         .items_center()
                         .gap(px(2.0))
-                        .child(chip)
+                        .child(self.track(&format!("log-branch-{branch}"), chip))
                         .children((branch != &detail.current_branch).then(|| {
-                            div()
-                                .id(ElementId::Name(format!("log-checkout-{branch}").into()))
-                                .text_xs()
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .cursor_pointer()
-                                .child("Switch")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.run_log_action(
-                                        super::log_actions::LogAction::Checkout(
-                                            checkout_branch.clone(),
-                                        ),
-                                        cx,
-                                    )
-                                }))
+                            self.track(
+                                &format!("log-checkout-{branch}"),
+                                div()
+                                    .id(ElementId::Name(format!("log-checkout-{branch}").into()))
+                                    .text_xs()
+                                    .px(px(6.0))
+                                    .py(px(4.0))
+                                    .cursor_pointer()
+                                    .child("Switch")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.run_log_action(
+                                            super::log_actions::LogAction::Checkout(
+                                                checkout_branch.clone(),
+                                            ),
+                                            cx,
+                                        )
+                                    })),
+                            )
                         }))
                         .children((branch != &detail.current_branch).then(|| {
-                            div()
-                                .id(ElementId::Name(format!("log-delete-{branch}").into()))
-                                .text_xs()
-                                .text_color(rgb(theme::RED))
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .cursor_pointer()
-                                .child("Delete")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.confirm_delete_branch(delete_branch.clone(), window, cx)
-                                }))
+                            self.track(
+                                &format!("log-delete-{branch}"),
+                                div()
+                                    .id(ElementId::Name(format!("log-delete-{branch}").into()))
+                                    .text_xs()
+                                    .text_color(rgb(theme::RED))
+                                    .px(px(6.0))
+                                    .py(px(4.0))
+                                    .cursor_pointer()
+                                    .child("Delete")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_delete_branch(
+                                            delete_branch.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            )
                         }))
                         .into_any_element()
                 })

@@ -121,28 +121,31 @@ impl GitMasterApp {
                                 }),
                             )
                             .child(
-                                div()
-                                    .id(ElementId::Name(format!("repo-{i}-toggle").into()))
-                                    .w(px(16.0))
-                                    .text_xs()
-                                    .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        if this
-                                            .repos
-                                            .get(i)
-                                            .is_some_and(|repo| !repo.submodules.is_empty())
-                                        {
-                                            this.toggle_repo_expanded(i);
-                                            cx.notify();
-                                        }
-                                    }))
-                                    .child(if has_submodules {
-                                        if is_expanded { "▾" } else { "▸" }
-                                    } else {
-                                        ""
-                                    }),
+                                self.track(
+                                    &format!("repo-{i}-toggle"),
+                                    div()
+                                        .id(ElementId::Name(format!("repo-{i}-toggle").into()))
+                                        .w(px(16.0))
+                                        .text_xs()
+                                        .text_color(rgb(theme::TEXT_SUBTLE))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                                            cx.stop_propagation();
+                                            if this
+                                                .repos
+                                                .get(i)
+                                                .is_some_and(|repo| !repo.submodules.is_empty())
+                                            {
+                                                this.toggle_repo_expanded(i);
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .child(if has_submodules {
+                                            if is_expanded { "▾" } else { "▸" }
+                                        } else {
+                                            ""
+                                        }),
+                                ),
                             )
                             .child(
                                 div()

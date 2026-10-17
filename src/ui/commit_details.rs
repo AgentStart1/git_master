@@ -61,65 +61,76 @@ impl GitMasterApp {
             Some(Err(error)) => format!("Cannot load commit: {error}"),
         };
         Some(
-            div()
-                .id("commit-details")
-                .flex()
-                .flex_col()
-                .h(px(280.0))
-                .flex_shrink_0()
-                .border_t_1()
-                .border_color(rgb(theme::BG_OVERLAY))
-                .bg(rgb(theme::BG_SURFACE))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .p(px(8.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .child(format!("Commit {hash} — {}", path.display())),
-                        )
-                        .child(
-                            div()
-                                .id("copy-commit-details")
-                                .text_xs()
-                                .cursor_pointer()
-                                .child("Copy")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(Ok(text)) = &this.commit_text {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            text.clone(),
-                                        ));
-                                    }
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id("close-commit-details")
-                                .text_xs()
-                                .cursor_pointer()
-                                .child("Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_commit_details();
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .id("commit-details-scroll")
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .overflow_y_scroll()
-                        .overflow_x_scroll()
-                        .p(px(12.0))
-                        .text_sm()
-                        .child(text),
-                )
-                .into_any_element(),
+            self.track(
+                "commit-details",
+                div()
+                    .id("commit-details")
+                    .flex()
+                    .flex_col()
+                    .min_w(px(0.0))
+                    .w_full()
+                    .h(px(280.0))
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(rgb(theme::BG_OVERLAY))
+                    .bg(rgb(theme::BG_SURFACE))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .p(px(8.0))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_xs()
+                                    .child(format!("Commit {hash} — {}", path.display())),
+                            )
+                            .child(
+                                div()
+                                    .id("copy-commit-details")
+                                    .text_xs()
+                                    .cursor_pointer()
+                                    .child("Copy")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(Ok(text)) = &this.commit_text {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                text.clone(),
+                                            ));
+                                        }
+                                    })),
+                            )
+                            .child(
+                                self.track(
+                                    "close-commit-details",
+                                    div()
+                                        .id("close-commit-details")
+                                        .text_xs()
+                                        .cursor_pointer()
+                                        .child("Close")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.close_commit_details();
+                                            cx.notify();
+                                        })),
+                                ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("commit-details-scroll")
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .overflow_x_scroll()
+                            .p(px(12.0))
+                            .text_sm()
+                            .child(text),
+                    ),
+            ),
         )
     }
 }

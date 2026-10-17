@@ -69,3 +69,5 @@ src/
 - Git action buttons modify repositories as indicated. Fetch All updates remote-tracking references without merging or changing working-tree files.
 - Moving nodes only changes their visual position for the current application session; it does not reorder or modify Git history.
 - Scanning only checks the direct children of the selected parent directory; it does not recursively search nested directories for repositories.
+
+For development setup, test commands, and the P0/P1 E2E coverage matrix, see [DEVELOPMENT.md](DEVELOPMENT.md).

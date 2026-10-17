@@ -1,0 +1,217 @@
+"""Real desktop input plus read-only view-tree observations. No direct feature actions."""
+from __future__ import annotations
+import ctypes
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+
+
+def walk(node):
+    yield node
+    for child in node.get("children", []):
+        yield from walk(child)
+
+
+def find(tree, node_id):
+    return next((node for node in walk(tree) if node.get("id") == node_id), None)
+
+
+def text(tree):
+    return "\n".join(node.get("text", "") for node in walk(tree))
+
+
+def wait_for(predicate, *, timeout=15, description="condition"):
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            value = predicate()
+            if value:
+                return value
+        except (OSError, ValueError, KeyError) as error:
+            last = error
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for {description}; last error: {last}")
+
+
+class App:
+    def __init__(self, binary, workspace, artifacts, env):
+        self.artifacts = artifacts
+        artifacts.mkdir(parents=True, exist_ok=True)
+        self.output = (artifacts / "app.log").open("wb")
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            self.port = reserve.getsockname()[1]
+        self.proc = subprocess.Popen([str(binary)], env={**env, "GIT_MASTER_OPEN_DIR": str(workspace),
+            "GIT_MASTER_RPC_PORT": str(self.port), "GIT_MASTER_TEST_PROMPTS": "1",
+            "LOCALAPPDATA": str((artifacts / "state").resolve())},
+            stdout=self.output, stderr=subprocess.STDOUT)
+        self.last_tree = None
+        self.window = None
+        self.rpc_id = 0
+        try:
+            wait_for(lambda: self.tree(), description="application RPC/frame")
+            self.wait(lambda tree: str(workspace) in text(tree) and not tree["state"]["scanning"], "workspace scan")
+        except BaseException:
+            self.save_failure()
+            self.close()
+            raise
+
+    def rpc(self, method, params=None):
+        self.rpc_id += 1
+        with socket.create_connection(("127.0.0.1", self.port), timeout=2) as connection:
+            connection.settimeout(4)
+            with connection.makefile("rwb") as channel:
+                channel.write((json.dumps({"jsonrpc": "2.0", "id": self.rpc_id,
+                    "method": method, "params": params or {}}) + "\n").encode())
+                channel.flush()
+                response = json.loads(channel.readline())
+        assert response.get("id") == self.rpc_id, response
+        assert "error" not in response, response
+        return response.get("result")
+
+    def tree(self):
+        assert self.proc.poll() is None, f"Application exited {self.proc.returncode}; see {self.artifacts / 'app.log'}"
+        tree = self.rpc("get_view_tree")
+        if tree:
+            self.last_tree = tree
+        return tree
+
+    def wait(self, predicate, description="application state"):
+        return wait_for(lambda: (tree if predicate(tree) else None) if (tree := self.tree()) else None,
+            description=description)
+
+    @staticmethod
+    def idle(tree):
+        state = tree.get("state", {})
+        return state and not any(state.get(key) for key in ("busy", "loading_detail", "worktree_loading", "scanning"))
+
+    def node(self, node_id):
+        return find(self.tree(), node_id)
+
+    def window_geometry(self):
+        if sys.platform == "win32":
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            # Pointer-sized types are required on 64-bit Windows.
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+            user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+            candidates = []
+            callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            def candidate(handle, _):
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(handle, ctypes.byref(pid))
+                if pid.value == self.proc.pid and user32.IsWindowVisible(handle):
+                    candidates.append(handle)
+                return True
+            user32.EnumWindows(callback_type(candidate), 0)
+            assert len(candidates) == 1, f"Expected one test window, found {candidates}"
+            self.window = candidates[0]
+            user32.SetForegroundWindow(self.window)
+            def focused():
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
+                return pid.value == self.proc.pid
+            wait_for(focused, timeout=3, description="test window foreground")
+            rect, origin = wintypes.RECT(), wintypes.POINT(0, 0)
+            assert user32.GetClientRect(self.window, ctypes.byref(rect))
+            assert user32.ClientToScreen(self.window, ctypes.byref(origin))
+            return origin.x, origin.y, rect.right, rect.bottom
+        if sys.platform.startswith("linux"):
+            def xdo(*args):
+                return subprocess.check_output(["xdotool", *map(str, args)], text=True, timeout=3).strip()
+            windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
+            assert len(windows) == 1, windows
+            self.window = windows[0]
+            xdo("windowfocus", self.window)
+            values = dict(line.split("=", 1) for line in xdo("getwindowgeometry", "--shell", self.window).splitlines() if "=" in line)
+            return tuple(int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+        raise AssertionError("Desktop input currently supports Windows and Linux/X11")
+
+    def click(self, node_id):
+        # Importing on Windows sets process DPI awareness before translating coordinates.
+        import pyautogui
+        pyautogui.PAUSE = 0.05
+        tree = self.wait(lambda tree: (node := find(tree, node_id)) and node.get("interactive") and node.get("bounds"), f"clickable {node_id}")
+        bounds = find(tree, node_id)["bounds"]
+        x, y, width, height = self.window_geometry()
+        root = find(tree, "root")["bounds"]
+        scale_x, scale_y = width / root["width"], height / root["height"]
+        local_x, local_y = bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+        assert 0 < local_x < root["width"] and 0 < local_y < root["height"], f"{node_id} outside viewport"
+        pyautogui.click(round(x + local_x * scale_x), round(y + local_y * scale_y))
+
+    def select(self, index, path):
+        self.click(f"repo-{index}")
+        return self.wait(lambda tree: self.idle(tree) and tree["state"].get("path") and
+            Path(tree["state"]["path"]).resolve() == Path(path).resolve(), f"repository {path}")
+
+    def tab(self, name):
+        self.click(f"tab-{name}")
+        return self.wait(lambda tree: self.idle(tree) and tree["state"]["tab"] == name, f"tab {name}")
+
+    def change(self, repo, relative, action):
+        tree = self.wait(lambda tree: self.idle(tree) and any(node.get("state", {}).get("path") == relative for node in walk(tree)), f"file row {relative}")
+        entry = next(node["state"] for node in walk(tree) if node.get("state", {}).get("path") == relative)
+        self.click(f"change-{action}-{entry['index']}")
+
+    def prompt(self, accept):
+        tree = self.wait(lambda tree: find(tree, "test-prompt"), "confirmation dialog")
+        self.click(f"test-prompt-answer-{0 if accept else 1}")
+        return self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
+
+    def save_failure(self):
+        try:
+            tree = self.tree()
+        except BaseException:
+            tree = self.last_tree
+        (self.artifacts / "view-tree.json").write_text(json.dumps(tree, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            import pyautogui
+            x, y, width, height = self.window_geometry()
+            pyautogui.screenshot(region=(x, y, width, height)).save(self.artifacts / "window.png")
+        except Exception as error:
+            (self.artifacts / "screenshot-error.txt").write_text(str(error), encoding="utf-8")
+
+    def close(self):
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+        self.output.close()
+
+
+def git(repo, *args, check=True):
+    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=20)
+    if check:
+        assert result.returncode == 0, f"git {args}: {result.stderr}"
+    return result.stdout if check else result
+
+
+def make_repo(path, *, commit=True):
+    path.mkdir(parents=True, exist_ok=True)
+    git(path, "init", "-b", "main")
+    git(path, "config", "user.name", "E2E Tests")
+    git(path, "config", "user.email", "e2e@example.invalid")
+    git(path, "config", "core.autocrlf", "false")
+    if commit:
+        (path / "tracked.txt").write_text("base\n", encoding="utf-8")
+        commit_all(path, "Base commit")
+    return path
+
+
+def commit_all(path, message):
+    git(path, "add", "--all")
+    git(path, "commit", "--allow-empty", "-m", message)

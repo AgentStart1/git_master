@@ -151,10 +151,11 @@ impl GitMasterApp {
         .top(px(0.0))
         .w(px(width))
         .h(px(height));
-        let rows =
-            graph.entries.iter().map(|entry| {
-                let path = layout.repository_path.clone();
-                let hash = entry.full_hash.clone();
+        let rows = graph.entries.iter().map(|entry| {
+            let path = layout.repository_path.clone();
+            let hash = entry.full_hash.clone();
+            self.track(
+                &format!("log-commit-{}", entry.full_hash),
                 div()
                     .id(ElementId::Name(
                         format!("log-commit-{}", entry.full_hash).into(),
@@ -209,8 +210,9 @@ impl GitMasterApp {
                             .child(div().text_xs().text_color(rgb(theme::TEXT_SUBTLE)).child(
                                 format!("{}  {} — {}", entry.hash, entry.author, entry.date),
                             )),
-                    )
-            });
+                    ),
+            )
+        });
         div()
             .id("log-scroll")
             .flex_1()

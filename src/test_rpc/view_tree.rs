@@ -28,6 +28,8 @@ impl Rect {
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ViewNode {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<serde_json::Value>,
     pub node_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -43,6 +45,7 @@ pub struct ViewNode {
 impl ViewNode {
     fn new(node_type: &str) -> Self {
         Self {
+            state: None,
             node_type: node_type.to_string(),
             id: None,
             text: None,
@@ -54,6 +57,11 @@ impl ViewNode {
 
     fn with_id(mut self, id: &str) -> Self {
         self.id = Some(id.to_string());
+        self
+    }
+
+    fn with_state(mut self, state: serde_json::Value) -> Self {
+        self.state = Some(state);
         self
     }
 
@@ -86,6 +94,9 @@ impl ViewNode {
 }
 
 pub struct TestViewTreeSnapshot {
+    test_prompt: Option<super::prompt::Description>,
+    commit_text: Option<Result<String, String>>,
+    selected_commit: bool,
     bounds: HashMap<String, Bounds<Pixels>>,
     parent_dir: Option<std::path::PathBuf>,
     repos: Vec<RepoInfo>,
@@ -112,6 +123,9 @@ pub struct TestViewTreeSnapshot {
 impl GitMasterApp {
     pub fn test_view_tree_snapshot(&self) -> TestViewTreeSnapshot {
         TestViewTreeSnapshot {
+            test_prompt: self.test_prompt.borrow().clone(),
+            commit_text: self.commit_text.clone(),
+            selected_commit: self.selected_commit.is_some(),
             bounds: self.bounds_registry.borrow().clone(),
             parent_dir: self.parent_dir.clone(),
             repos: self.repos.clone(),
@@ -161,6 +175,59 @@ impl TestViewTreeSnapshot {
             root = root.with_child(menu);
         }
 
+        if self.selected_commit {
+            root = root.with_child(
+                ViewNode::new("panel")
+                    .with_id("commit-details")
+                    .with_text(&match &self.commit_text {
+                        Some(Ok(text)) => text.clone(),
+                        Some(Err(error)) => error.clone(),
+                        None => "Loading commit…".into(),
+                    })
+                    .with_child(
+                        ViewNode::new("button")
+                            .with_id("close-commit-details")
+                            .with_text("Close")
+                            .with_interactive(),
+                    ),
+            );
+        }
+        if let Some(prompt) = &self.test_prompt {
+            root = root.with_child(
+                ViewNode::new("dialog")
+                    .with_id("test-prompt")
+                    .with_text(&prompt.message)
+                    .with_child(ViewNode::new("text").with_text(&prompt.detail))
+                    .with_children(
+                        prompt
+                            .answers
+                            .iter()
+                            .enumerate()
+                            .map(|(i, label)| {
+                                ViewNode::new("button")
+                                    .with_id(&format!("test-prompt-answer-{i}"))
+                                    .with_text(label)
+                                    .with_interactive()
+                            })
+                            .collect(),
+                    ),
+            );
+        }
+        fn attach_bounds(node: &mut ViewNode, reg: &HashMap<String, Bounds<Pixels>>) {
+            if let Some(bounds) = node.id.as_ref().and_then(|id| reg.get(id)) {
+                node.bounds = Some(Rect::from_gpui(bounds));
+            }
+            for child in &mut node.children {
+                attach_bounds(child, reg);
+            }
+        }
+        attach_bounds(&mut root, reg);
+        root.state = Some(serde_json::json!({
+            "busy": self.busy, "loading_detail": self.loading_detail,
+            "scanning": self.scanning, "worktree_loading": self.worktree_loading,
+            "path": self.detail.as_ref().map(|detail| &detail.path),
+            "tab": match self.active_tab { DetailTab::Info => "info", DetailTab::GitLog => "log", DetailTab::GitChange => "change", DetailTab::GitStash => "stash" },
+        }));
         root
     }
 
@@ -236,6 +303,13 @@ impl TestViewTreeSnapshot {
                             .with_text(&format!("Branch: {}", repo.current_branch)),
                     )
                     .with_child(ViewNode::new("text").with_text(dirty_text));
+                if !repo.submodules.is_empty() {
+                    item = item.with_child(
+                        ViewNode::new("button")
+                            .with_id(&format!("repo-{i}-toggle"))
+                            .with_interactive(),
+                    );
+                }
 
                 for status in &repo.remote_statuses {
                     item = item.with_child(ViewNode::new("text").with_text(&status.label()));
@@ -403,7 +477,7 @@ impl TestViewTreeSnapshot {
                         "{} — {}",
                         entry.path.display(),
                         entry.status
-                    )))
+                    )).with_state(serde_json::json!({"path":entry.path.to_string_lossy(),"index":index})))
                     .with_child(button(&format!("change-diff-{index}"), "Diff"));
                 if entry.unstaged {
                     node = node.with_child(button(&format!("change-stage-{index}"), "Stage"));
@@ -433,6 +507,7 @@ impl TestViewTreeSnapshot {
                                 crate::diff_model::RowKind::Removed => "diff-removed",
                                 _ => "diff-row",
                             })
+                            .with_state(serde_json::json!({"old_line":row.old_line,"new_line":row.new_line,"highlights":row.highlights.iter().map(|range| vec![range.start,range.end]).collect::<Vec<_>>() }))
                             .with_text(&format!(
                                 "{} {} {}",
                                 row.old_line.map(|n| n.to_string()).unwrap_or_default(),
@@ -538,6 +613,12 @@ impl TestViewTreeSnapshot {
                                 if branch != &detail.current_branch {
                                     nodes.push(
                                         ViewNode::new("button")
+                                            .with_id(&format!("log-checkout-{branch}"))
+                                            .with_text("Switch")
+                                            .with_interactive(),
+                                    );
+                                    nodes.push(
+                                        ViewNode::new("button")
                                             .with_id(&format!("log-delete-{branch}"))
                                             .with_text("Delete")
                                             .with_interactive(),
@@ -576,6 +657,8 @@ impl TestViewTreeSnapshot {
             .iter()
             .map(|entry| {
                 ViewNode::new("list-item")
+                    .with_id(&format!("log-commit-{}", entry.full_hash))
+                    .with_interactive()
                     .with_child(ViewNode::new("text").with_text(&entry.hash))
                     .with_child(ViewNode::new("text").with_text(&entry.message))
                     .with_children(

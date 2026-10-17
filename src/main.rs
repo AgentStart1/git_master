@@ -64,6 +64,13 @@ fn main() {
         #[cfg(feature = "test-rpc")]
         {
             if let Ok(entity) = window.entity(cx) {
+                if std::env::var("GIT_MASTER_TEST_PROMPTS").as_deref() == Ok("1") {
+                    let bounds = entity.read(cx).bounds_registry.clone();
+                    let prompts = entity.read(cx).test_prompt.clone();
+                    cx.set_prompt_builder(move |_, message, detail, answers, handle, window, cx| {
+                        test_rpc::prompt::build(message, detail, answers, handle, window, cx, bounds.clone(), prompts.clone())
+                    });
+                }
                 if let Ok(dir) = std::env::var("GIT_MASTER_OPEN_DIR") {
                     let path = std::path::PathBuf::from(&dir);
                     entity.update(cx, |this, cx| {

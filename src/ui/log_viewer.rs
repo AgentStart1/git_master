@@ -278,7 +278,15 @@ impl LogsWindow {
             State::Ready(snapshot) => (snapshot.truncated.then_some(
                 "Showing the latest 2,000 lines, up to 256 KiB. Older entries remain in the log file."), theme::TEXT_SUBTLE),
         };
-        let (body, last) = text.rsplit_once('\n').unwrap_or(("", text));
+        let fallback;
+        let rows = match state {
+            State::Ready(snapshot) if !snapshot.text.is_empty() => &snapshot.rows,
+            _ => {
+                fallback = vec![text.to_owned()];
+                &fallback
+            }
+        };
+        let (last, body) = rows.split_last().expect("log display has at least one row");
         self.track(
             "logs-panel",
             div()
@@ -378,14 +386,15 @@ impl LogsWindow {
                                 "monospace"
                             })
                             .text_xs()
+                            .line_height(px(19.2))
                             .text_color(rgb(color))
-                            .child(div().flex_shrink_0().child(body.to_owned()))
-                            .child(
-                                self.track(
-                                    "logs-end",
-                                    div().flex_shrink_0().child(last.to_owned()),
-                                ),
-                            ),
+                            .children(body.iter().map(|row| {
+                                div().min_h(px(19.2)).flex_shrink_0().child(row.clone())
+                            }))
+                            .child(self.track(
+                                "logs-end",
+                                div().min_h(px(19.2)).flex_shrink_0().child(last.clone()),
+                            )),
                     ),
                 ),
         )

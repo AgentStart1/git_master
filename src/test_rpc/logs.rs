@@ -20,6 +20,12 @@ pub fn build_tree(
     use crate::log_viewer::State;
     let state = &viewer.state;
     let message = state.display_text();
+    let last = match state {
+        State::Ready(snapshot) if !snapshot.text.is_empty() => {
+            snapshot.rows.last().map(String::as_str).unwrap_or_default()
+        }
+        _ => message,
+    };
     let phase = match state {
         State::Loading => "loading",
         State::Failed(_) => "failed",
@@ -33,11 +39,7 @@ pub fn build_tree(
                 .with_id("logs-content")
                 .with_interactive()
                 .with_text(&message)
-                .with_child(
-                    ViewNode::new("text")
-                        .with_id("logs-end")
-                        .with_text(message.rsplit('\n').next().unwrap_or_default()),
-                ),
+                .with_child(ViewNode::new("text").with_id("logs-end").with_text(last)),
         );
     if let State::Ready(snapshot) = state {
         panel = panel.with_state(

@@ -9,6 +9,34 @@ pub struct Snapshot {
     pub path: PathBuf,
     pub text: String,
     pub truncated: bool,
+    pub rows: Vec<String>,
+}
+
+impl Snapshot {
+    fn new(path: PathBuf, text: String, truncated: bool) -> Self {
+        // Bound each shaping operation. A single large text element can stall
+        // the Linux text backend even though the overall byte budget is bounded.
+        let mut rows = Vec::new();
+        for line in text.split('\n') {
+            let mut row = String::new();
+            let mut length = 0;
+            for character in line.chars() {
+                if length == 512 {
+                    rows.push(std::mem::take(&mut row));
+                    length = 0;
+                }
+                row.push(character);
+                length += 1;
+            }
+            rows.push(row);
+        }
+        Self {
+            path,
+            text,
+            truncated,
+            rows,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,11 +128,7 @@ fn read_tail(path: &Path) -> std::io::Result<Snapshot> {
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Snapshot {
-                path: path.to_owned(),
-                text: String::new(),
-                truncated: false,
-            });
+            return Ok(Snapshot::new(path.to_owned(), String::new(), false));
         }
         Err(error) => return Err(error),
     };
@@ -140,11 +164,7 @@ fn read_tail(path: &Path) -> std::io::Result<Snapshot> {
     let truncated = start > 0 || lines.len() > MAX_LINES;
     lines.truncate(MAX_LINES);
     lines.reverse();
-    Ok(Snapshot {
-        path: path.to_owned(),
-        text: lines.join("\n"),
-        truncated,
-    })
+    Ok(Snapshot::new(path.to_owned(), lines.join("\n"), truncated))
 }
 
 #[cfg(test)]
@@ -152,11 +172,7 @@ mod tests {
     use super::*;
 
     fn snapshot(text: &str) -> Snapshot {
-        Snapshot {
-            path: PathBuf::from("application.log"),
-            text: text.into(),
-            truncated: true,
-        }
+        Snapshot::new(PathBuf::from("application.log"), text.into(), true)
     }
 
     #[test]
@@ -262,6 +278,20 @@ mod tests {
             assert!(!result.text.contains('\u{fffd}'));
             assert!(result.text.len() <= MAX_BYTES as usize);
             assert!(result.truncated);
+            assert!(result.rows.iter().all(|row| row.chars().count() <= 512));
+            assert!(result.rows.concat() == result.text);
         }
+    }
+
+    #[test]
+    fn display_rows_preserve_empty_lines_and_original_copy_text() {
+        let text = format!("first\n\n{}\nlast", "中".repeat(1500));
+        let result = snapshot(&text);
+        assert_eq!(result.rows.len(), 6);
+        assert_eq!(result.rows[1], "");
+        assert_eq!(result.rows[2].chars().count(), 512);
+        assert_eq!(result.rows[4].chars().count(), 476);
+        assert_eq!(result.rows[5], "last");
+        assert_eq!(result.text, text);
     }
 }

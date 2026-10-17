@@ -13,6 +13,7 @@ impl GitMasterApp {
             return;
         };
         let mutating = action.mutates();
+        let refresh_metadata = mutating || matches!(action, Action::Refresh);
         if mutating && self.worktree_loading {
             return;
         }
@@ -34,10 +35,10 @@ impl GitMasterApp {
                         action,
                     }
                     .run();
-                    let refreshed = mutating
+                    let refreshed = refresh_metadata
                         .then(|| crate::git_ops::build_repo_info(&root_path))
                         .flatten();
-                    let detail = mutating
+                    let detail = refresh_metadata
                         .then(|| crate::git_ops::get_repo_detail(&target))
                         .flatten();
                     (result, snapshot, refreshed, detail)
@@ -47,6 +48,8 @@ impl GitMasterApp {
                 .update(cx, |this, cx| {
                     if mutating {
                         this.busy = false;
+                    }
+                    if refresh_metadata {
                         this.apply_repo_refresh(index, &root, refreshed);
                     }
                     if this.selected_remote_action_target().is_some_and(
@@ -54,7 +57,7 @@ impl GitMasterApp {
                     ) {
                         this.worktree_loading = false;
                         this.worktree = Some((path, snapshot));
-                        if mutating {
+                        if refresh_metadata {
                             this.detail = detail;
                         }
                         match result {

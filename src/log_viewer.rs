@@ -109,15 +109,29 @@ fn read_tail(path: &Path) -> std::io::Result<Snapshot> {
         Err(error) => return Err(error),
     };
     let start = file.metadata()?.len().saturating_sub(MAX_BYTES);
-    file.seek(SeekFrom::Start(start))?;
+    // One byte of look-behind distinguishes a complete line from a partial entry.
+    let look_behind = u64::from(start > 0);
+    file.seek(SeekFrom::Start(start - look_behind))?;
     let mut bytes = Vec::new();
-    file.take(MAX_BYTES).read_to_end(&mut bytes)?;
-    // Skip the partial first entry when the byte limit lands inside a line.
-    let bytes = if start > 0 {
-        bytes
+    file.take(MAX_BYTES + look_behind).read_to_end(&mut bytes)?;
+    let bytes = if let Some((&previous, tail)) = bytes.split_first().filter(|_| start > 0) {
+        if previous == b'\n' {
+            tail
+        } else if let Some(end) = tail
             .iter()
             .position(|byte| *byte == b'\n')
-            .map_or(bytes.as_slice(), |end| &bytes[end + 1..])
+            .filter(|end| end + 1 < tail.len())
+        {
+            &tail[end + 1..]
+        } else {
+            // The newest entry alone exceeds the byte budget. Keep its suffix,
+            // even with a terminal newline, without starting inside a UTF-8 scalar.
+            let boundary = tail
+                .iter()
+                .position(|byte| byte & 0xc0 != 0x80)
+                .unwrap_or(tail.len());
+            &tail[boundary..]
+        }
     } else {
         &bytes
     };
@@ -222,5 +236,32 @@ mod tests {
                 .is_empty()
         );
         assert!(read_tail(directory.path()).is_err());
+    }
+
+    #[test]
+    fn byte_boundary_keeps_a_complete_first_line() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.log");
+        let tail = format!("{}\nLATEST\n", "x".repeat(MAX_BYTES as usize - 8));
+        assert_eq!(tail.len(), MAX_BYTES as usize);
+        std::fs::write(&path, format!("old\n{tail}")).unwrap();
+        let result = read_tail(&path).unwrap();
+        assert!(result.text == tail.trim_end_matches('\n'));
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn oversized_final_entry_keeps_valid_unicode_tail_with_or_without_newline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("application.log");
+        for ending in ["", "\n", "\r\n"] {
+            let data = format!("old\n{}LATEST{ending}", "中".repeat(100_000));
+            std::fs::write(&path, &data).unwrap();
+            let result = read_tail(&path).unwrap();
+            assert!(result.text.ends_with("LATEST"), "ending={ending:?}");
+            assert!(!result.text.contains('\u{fffd}'));
+            assert!(result.text.len() <= MAX_BYTES as usize);
+            assert!(result.truncated);
+        }
     }
 }

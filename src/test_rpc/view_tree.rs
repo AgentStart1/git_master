@@ -112,6 +112,7 @@ pub struct TestViewTreeSnapshot {
     loading_detail: bool,
     context_menu: Option<ContextMenu>,
     status_message: Option<String>,
+    status_expanded: bool,
     status_revision: u64,
     view_revision: u64,
     worktree: Option<(
@@ -143,6 +144,7 @@ impl GitMasterApp {
             loading_detail: self.loading_detail,
             context_menu: self.context_menu.clone(),
             status_message: self.status_message.clone(),
+            status_expanded: self.status_expanded,
             status_revision: self.status_revision,
             view_revision: self.test_view_revision,
             worktree: self.worktree.clone(),
@@ -254,6 +256,31 @@ impl TestViewTreeSnapshot {
                 ViewNode::new("text")
                     .with_id("status-message")
                     .with_text(msg),
+            );
+        }
+
+        for id in ["status-toggle", "status-copy"] {
+            if self.status_message.is_some() {
+                bar = bar.with_child(
+                    ViewNode::new("button")
+                        .with_id(id)
+                        .with_interactive()
+                        .with_bounds_from(reg, id),
+                );
+            }
+        }
+        bar = bar.with_child(
+            ViewNode::new("text")
+                .with_id("status-summary")
+                .with_bounds_from(reg, "status-summary"),
+        );
+        if self.status_expanded {
+            bar = bar.with_child(
+                ViewNode::new("panel")
+                    .with_id("status-details")
+                    .with_interactive()
+                    .with_text(self.status_message.as_deref().unwrap_or_default())
+                    .with_bounds_from(reg, "status-details"),
             );
         }
 

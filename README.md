@@ -6,6 +6,7 @@ A desktop application built with [GPUI](https://www.gpui.rs/) for viewing the st
 
 - **Batch scanning**: Select a parent directory to automatically discover and alphabetically sort all Git repositories directly beneath it.
 - **Fetch All**: Fetch every configured remote of every project in the current repository list, pruning stale remote-tracking branches. Runs in the background, continues after failures, refreshes repository status and selected project details, and reports a summary with an operation log path on failure. Projects without remotes are skipped; submodules are not separately included in this batch.
+- **Background task feedback**: A compact status bar shows the current task with an animated activity indicator. Results stay on one line; open Details for the complete output in a bounded, scrollable panel, or Copy to copy it. New task messages collapse previous details automatically.
 - **Status overview**: Each repository shows:
   - The current branch
   - Whether the working tree is clean (`✓` in green / `●` in red)

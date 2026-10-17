@@ -64,6 +64,7 @@ pub struct GitMasterApp {
     pub loading_detail: bool,
     pub context_menu: Option<ContextMenu>,
     pub status_message: Option<String>,
+    pub status_expanded: bool,
     #[cfg(feature = "test-rpc")]
     pub status_revision: u64,
     pub busy: bool,
@@ -117,6 +118,7 @@ impl GitMasterApp {
             loading_detail: false,
             context_menu: None,
             status_message: None,
+            status_expanded: false,
             #[cfg(feature = "test-rpc")]
             status_revision: 0,
             busy: false,
@@ -289,6 +291,7 @@ impl GitMasterApp {
             self.status_revision += 1;
         }
         self.status_message = Some(msg.into());
+        self.status_expanded = false;
     }
 
     #[cfg(feature = "test-rpc")]

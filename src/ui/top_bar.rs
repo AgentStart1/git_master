@@ -73,10 +73,10 @@ impl GitMasterApp {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "No directory selected".into());
 
-        let status_msg = self.status_message.clone();
         let can_fetch = !self.busy && !self.scanning && !self.repos.is_empty();
         let fetch_btn = div()
             .id("fetch-all-btn")
+            .flex_shrink_0()
             .px(px(12.0))
             .py(px(7.0))
             .rounded(px(7.0))
@@ -99,6 +99,7 @@ impl GitMasterApp {
 
         let main_btn = div()
             .id("switch-all-main-btn")
+            .flex_shrink_0()
             .px(px(12.0))
             .py(px(7.0))
             .rounded(px(7.0))
@@ -121,6 +122,7 @@ impl GitMasterApp {
 
         let btn = div()
             .id("change-dir-btn")
+            .flex_shrink_0()
             .px(px(13.0))
             .py(px(7.0))
             .bg(rgb(theme::ACCENT))
@@ -150,7 +152,7 @@ impl GitMasterApp {
                     }));
             }));
 
-        div()
+        let header = div()
             .flex()
             .flex_shrink_0()
             .flex_row()
@@ -178,6 +180,7 @@ impl GitMasterApp {
                     .flex()
                     .flex_col()
                     .flex_grow()
+                    .min_w(px(0.0))
                     .gap(px(2.0))
                     .child(
                         div()
@@ -185,15 +188,178 @@ impl GitMasterApp {
                             .text_color(rgb(theme::TEXT_MUTED))
                             .child("WORKSPACE"),
                     )
-                    .child(div().text_sm().child(dir_label))
-                    .children(
-                        status_msg
-                            .map(|msg| div().text_xs().text_color(rgb(theme::YELLOW)).child(msg)),
-                    ),
+                    .child(div().text_sm().text_ellipsis().child(dir_label)),
             )
             .child(self.track("fetch-all-btn", fetch_btn))
             .child(self.track("switch-all-main-btn", main_btn))
-            .child(self.track("change-dir-btn", btn))
+            .child(self.track("change-dir-btn", btn));
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .child(header)
+            .children(self.render_task_status(cx))
             .into_any_element()
+    }
+}
+
+impl GitMasterApp {
+    fn render_task_status(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+        let running = self.busy || self.scanning || self.loading_detail || self.worktree_loading;
+        let message = if self.busy {
+            self.status_message.as_deref().unwrap_or("Working…")
+        } else if self.scanning {
+            "Scanning workspace…"
+        } else if self.loading_detail {
+            "Loading repository…"
+        } else if self.worktree_loading {
+            "Loading changes…"
+        } else {
+            self.status_message.as_deref()?
+        };
+        let summary: String = message
+            .lines()
+            .next()
+            .unwrap_or("Task completed")
+            .chars()
+            .take(180)
+            .collect();
+        let normalized = summary.to_ascii_lowercase();
+        let failed =
+            if normalized.starts_with("fetch all:") || normalized.starts_with("switch to main:") {
+                !normalized.contains(", 0 failed")
+            } else {
+                ["failed:", "error:", "cannot ", "conflict"]
+                    .iter()
+                    .any(|word| normalized.contains(word))
+            };
+        let color = if running {
+            theme::ACCENT
+        } else if failed {
+            theme::RED
+        } else {
+            theme::TEXT_SUBTLE
+        };
+        let mut strip = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .bg(rgb(theme::BG_SURFACE))
+            .border_b_1()
+            .border_color(rgb(theme::BORDER));
+        let row = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .h(px(34.0))
+            .px(px(16.0))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(rgb(color))
+                    .child(if running {
+                        "◌  In progress"
+                    } else if failed {
+                        "●  Failed"
+                    } else {
+                        "●  Result"
+                    }),
+            )
+            .child(
+                self.track(
+                    "status-summary",
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_xs()
+                        .text_color(rgb(theme::TEXT_PRIMARY))
+                        .text_ellipsis()
+                        .child(summary),
+                ),
+            )
+            .when(self.status_message.is_some(), |row| {
+                row.child(
+                    self.track(
+                        "status-toggle",
+                        div()
+                            .id("status-toggle")
+                            .cursor_pointer()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(rgb(theme::ACCENT))
+                            .child(if self.status_expanded {
+                                "Hide details"
+                            } else {
+                                "Details"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.status_expanded = !this.status_expanded;
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .child(
+                    self.track(
+                        "status-copy",
+                        div()
+                            .id("status-copy")
+                            .cursor_pointer()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(rgb(theme::TEXT_SUBTLE))
+                            .child("Copy")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(message) = &this.status_message {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        message.clone(),
+                                    ));
+                                }
+                            })),
+                    ),
+                )
+            });
+        strip = strip.child(row);
+        if running {
+            strip = strip.child(
+                div().h(px(2.0)).w_full().with_animation(
+                    "task-activity",
+                    Animation::new(std::time::Duration::from_millis(1400))
+                        .repeat()
+                        .with_easing(pulsating_between(0.25, 0.85)),
+                    |element, opacity| element.bg(rgb(theme::ACCENT)).opacity(opacity),
+                ),
+            );
+        }
+        if self.status_expanded
+            && let Some(message) = &self.status_message
+        {
+            strip = strip.child(
+                self.track(
+                    "status-details",
+                    div()
+                        .id("status-details")
+                        .h(px(160.0))
+                        .flex_shrink_0()
+                        .overflow_y_scroll()
+                        .overflow_x_scroll()
+                        .px(px(16.0))
+                        .py(px(10.0))
+                        .bg(rgb(theme::BG_BASE))
+                        .font_family(if cfg!(windows) {
+                            "Consolas"
+                        } else if cfg!(target_os = "macos") {
+                            "Menlo"
+                        } else {
+                            "monospace"
+                        })
+                        .text_xs()
+                        .text_color(rgb(theme::TEXT_SUBTLE))
+                        .child(message.clone()),
+                ),
+            );
+        }
+        Some(strip.into_any_element())
     }
 }

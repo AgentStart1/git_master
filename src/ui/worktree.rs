@@ -537,6 +537,11 @@ fn state_card(title: &str, message: &str, color: u32) -> AnyElement {
         )
         .child(
             div()
+                .id("worktree-state-message")
+                .max_h(px(160.0))
+                .max_w_full()
+                .overflow_y_scroll()
+                .overflow_x_scroll()
                 .text_xs()
                 .text_color(rgb(theme::TEXT_SUBTLE))
                 .child(message.to_owned()),

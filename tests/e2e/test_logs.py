@@ -19,6 +19,8 @@ def open_logs(app):
         logs.last_tree = value
         return value
     logs.tree = tree
+    logs.wait(lambda t: find(t, "logs-root"), "initial log window paint")
+    logs.window_geometry()  # Xvfb must explicitly activate each new native window.
     return logs
 
 

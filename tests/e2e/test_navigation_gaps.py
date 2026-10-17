@@ -95,8 +95,9 @@ def test_branch_filter_changes_list_and_graph_without_checkout(app_factory, isol
     app.wait(lambda t: "At least one branch must remain visible" in text(t), "last branch safeguard")
     assert "Feature-only history" in text(find(app.tree(), "log-list"))
     app.click("log-view-canvas")
-    assert "Feature-only history" in text(find(app.tree(), "commit-canvas"))
-    assert "Main-only history" not in text(find(app.tree(), "commit-canvas"))
+    canvas = find(app.wait(lambda t: find(t, "commit-canvas"), "filtered canvas"), "commit-canvas")
+    assert "Feature-only history" in text(canvas)
+    assert "Main-only history" not in text(canvas)
     assert git(repo, "rev-parse", "HEAD").strip() == original
     assert git(repo, "branch", "--show-current").strip() == "main"
 
@@ -131,7 +132,7 @@ def test_canvas_click_drag_pan_zoom_and_per_repo_view_state(app_factory, isolate
     app.select(0, repo)
     app.tab("log")
     app.click("log-view-canvas")
-    restored = find(app.tree(), node_id)["bounds"]
+    restored = find(app.wait(lambda t: find(t, node_id) and find(t, node_id).get("bounds"), "restored canvas"), node_id)["bounds"]
     assert restored == pytest.approx(saved, abs=1)
     assert git(repo, "status", "--porcelain") == ""
 

@@ -83,6 +83,9 @@ jobs:
       - name: Build (test-rpc)
         run: cargo build --features test-rpc
 
+      - name: Run Rust regression tests
+        run: cargo test --features test-rpc
+
       - name: Run E2E tests
         run: |
           xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e -v --app-binary target/debug/git_master --junitxml=test-results/e2e.xml

@@ -119,4 +119,4 @@ For portable confirmation testing, `GIT_MASTER_TEST_PROMPTS=1` installs a custom
 
 `--artifacts test-results/e2e` selects the diagnostics folder. Each case records application output and isolated operation logs. Failures also save the last view tree and a screenshot cropped to the test application's client window where available. A JUnit XML report is emitted by `--junitxml`.
 
-CI builds the application on Linux, Windows, and macOS. The desktop E2E job runs pytest serially under Linux Xvfb and uploads JUnit, application logs, failure trees, and screenshots even after a test failure. Local Windows runs exercise the same tests on a real desktop. No network credentials or external Git hosting are needed by the tests.
+CI builds the application on Linux, Windows, and macOS. The E2E job also executes the Rust regression suite and driver acknowledgement checks, then runs desktop pytest cases serially under Linux Xvfb and uploads JUnit, application logs, failure trees, and screenshots even after a test failure. Local Windows runs exercise the same tests on a real desktop. No network credentials or external Git hosting are needed by the tests.

@@ -120,6 +120,7 @@ impl GitMasterApp {
             LogAction::Push { remote } => format!("Pushing {expected_branch} to {remote}…"),
         });
         cx.notify();
+        let navigation = self.navigation_revision;
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let expected_target = target.clone();
             let expected_root = root.clone();
@@ -161,20 +162,25 @@ impl GitMasterApp {
                         Ok(_) => "Branch operation complete".into(),
                         Err(error) => format!("Branch operation failed: {error}"),
                     });
-                    if action_succeeded && let Some(branch) = deleted_branch {
-                        this.log_visible_branches.remove(&branch);
-                        if this.log_visible_branches.is_empty() {
-                            this.log_visible_branches.insert(expected_branch);
-                        }
-                    }
                     this.apply_repo_refresh(index, &expected_root, refreshed);
                     if this.selected_remote_action_target().is_some_and(
                         |(_, _, path, selected, _)| {
                             path == expected_target && selected == selection
                         },
                     ) {
-                        this.apply_detail(selection, detail, submodule, Vec::new(), layout);
+                        if this.navigation_revision != navigation {
+                            this.reload_current_detail(cx);
+                        } else {
+                            if action_succeeded && let Some(branch) = deleted_branch {
+                                this.log_visible_branches.remove(&branch);
+                                if this.log_visible_branches.is_empty() {
+                                    this.log_visible_branches.insert(expected_branch);
+                                }
+                            }
+                            this.apply_detail(selection, detail, submodule, Vec::new(), layout);
+                        }
                     }
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();

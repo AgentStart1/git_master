@@ -6,18 +6,33 @@ use gpui::*;
 
 impl GitMasterApp {
     pub(crate) fn run_worktree(&mut self, action: Action, cx: &mut Context<'_, Self>) {
-        if self.busy || self.loading_detail {
+        self.start_worktree(action, true, cx);
+    }
+
+    pub(super) fn refresh_visible_worktree(&mut self, cx: &mut Context<'_, Self>) {
+        if matches!(
+            self.active_tab,
+            crate::app_state::DetailTab::GitChange | crate::app_state::DetailTab::GitStash
+        ) {
+            self.start_worktree(Action::Refresh, false, cx);
+        }
+    }
+
+    fn start_worktree(&mut self, action: Action, report_status: bool, cx: &mut Context<'_, Self>) {
+        let mutating = action.mutates();
+        if (self.busy && mutating) || self.loading_detail {
             return;
         }
         let Some((index, root, path, selection, _)) = self.selected_remote_action_target() else {
             return;
         };
-        let mutating = action.mutates();
         let refresh_metadata = mutating || matches!(action, Action::Refresh);
         if mutating && self.worktree_loading {
             return;
         }
         self.worktree_task = None;
+        self.worktree_revision += 1;
+        let revision = self.worktree_revision;
         self.worktree_loading = true;
         if mutating {
             self.busy = true;
@@ -46,33 +61,43 @@ impl GitMasterApp {
                 .await;
             entity
                 .update(cx, |this, cx| {
+                    let owns_request = this.owns_worktree_request(revision)
+                        && this.selected_remote_action_target().is_some_and(
+                            |(_, _, current, selected, _)| current == path && selected == selection,
+                        );
+                    if !mutating && !owns_request {
+                        return;
+                    }
                     if mutating {
                         this.busy = false;
                     }
                     if refresh_metadata {
                         this.apply_repo_refresh(index, &root, refreshed);
                     }
-                    if this.selected_remote_action_target().is_some_and(
-                        |(_, _, current, selected, _)| current == path && selected == selection,
-                    ) {
+                    if owns_request {
                         this.worktree_loading = false;
                         this.worktree = Some((path, snapshot));
                         if refresh_metadata {
                             this.detail = detail;
                         }
-                        match result {
-                            Ok(()) => this.set_status(if mutating {
-                                "Git operation complete"
-                            } else {
-                                "Repository changes and stashes refreshed"
-                            }),
-                            Err(error) => this.set_status(format!("Git operation failed: {error}")),
+                        if report_status {
+                            match result {
+                                Ok(()) => this.set_status(if mutating {
+                                    "Git operation complete"
+                                } else {
+                                    "Repository changes and stashes refreshed"
+                                }),
+                                Err(error) => {
+                                    this.set_status(format!("Git operation failed: {error}"))
+                                }
+                            }
                         }
-                    } else {
-                        this.worktree_loading = false;
-                        if let Err(error) = result {
-                            this.set_status(format!("Git operation failed: {error}"));
-                        }
+                    } else if mutating {
+                        this.set_status(match result {
+                            Ok(()) => "Git operation complete".to_string(),
+                            Err(error) => format!("Git operation failed: {error}"),
+                        });
+                        this.refresh_visible_worktree(cx);
                     }
                     cx.notify();
                 })

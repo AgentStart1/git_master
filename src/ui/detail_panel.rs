@@ -400,6 +400,7 @@ impl GitMasterApp {
                         Ok(_) => "Submodule initialized; canvas refreshed".into(),
                         Err(error) => format!("Submodule init failed: {error}"),
                     });
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();
@@ -427,7 +428,7 @@ impl GitMasterApp {
     }
 
     pub(super) fn toggle_log_branch(&mut self, branch: String, cx: &mut Context<'_, Self>) {
-        if self.busy {
+        if self.busy || self.loading_detail {
             return;
         }
         if self.log_visible_branches.is_empty()
@@ -636,6 +637,7 @@ impl GitMasterApp {
             format!("Fetching {remote}…")
         });
         cx.notify();
+        let navigation = self.navigation_revision;
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let refresh_path = root_path.clone();
             let detail_path = target_path.clone();
@@ -675,15 +677,20 @@ impl GitMasterApp {
                             path == expected_detail_path && current == selection
                         },
                     ) {
-                        this.apply_detail(
-                            selection,
-                            detail,
-                            submodule_detail,
-                            log_entries,
-                            canvas_layout,
-                        );
+                        if this.navigation_revision != navigation {
+                            this.reload_current_detail(cx);
+                        } else {
+                            this.apply_detail(
+                                selection,
+                                detail,
+                                submodule_detail,
+                                log_entries,
+                                canvas_layout,
+                            );
+                        }
                     }
                     this.busy = false;
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();
@@ -732,56 +739,20 @@ impl GitMasterApp {
                             }
                             this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
                             let selected = this.selected_submodule();
-                            if let Some((repo_index, submodule_index, relative_path)) = selected
+                            if let Some((repo_index, _, relative_path)) = selected
                                 && relative_path == selected_relative_path
-                                && let Some(submodule) = this
+                                && this
                                     .repos
                                     .get(repo_index)
-                                    .and_then(|repo| repo.submodules.get(submodule_index))
+                                    .is_some_and(|repo| repo.path == refresh_path)
                             {
-                                let path = submodule.path.clone();
-                                let submodule_detail = Some(SubmoduleDetail {
-                                    name: submodule.name.clone(),
-                                    path: submodule.path.display().to_string(),
-                                    url: submodule.url.clone(),
-                                    is_initialized: submodule.is_initialized,
-                                });
-                                let selection = RepoSelection::Submodule {
-                                    repo_index,
-                                    submodule_index,
-                                    relative_path,
-                                };
-                                this.loading_detail = true;
-                                cx.notify();
-                                this.detail_task = Some(cx.spawn(async move |entity, cx| {
-                                    let (detail, log_entries, canvas_layout) = cx
-                                        .background_executor()
-                                        .spawn(async move {
-                                            (
-                                                git_ops::get_repo_detail(&path),
-                                                git_ops::get_commit_log(&path, 200),
-                                                commit_canvas::load_layout_for_path(&path, 200),
-                                            )
-                                        })
-                                        .await;
-                                    entity
-                                        .update(cx, |this, cx| {
-                                            this.apply_detail(
-                                                selection,
-                                                detail,
-                                                submodule_detail,
-                                                log_entries,
-                                                canvas_layout,
-                                            );
-                                            cx.notify();
-                                        })
-                                        .ok();
-                                }));
+                                this.reload_current_detail(cx);
                             }
                         }
                         Err(e) => this.set_status(format!("Submodule init failed: {e}")),
                     }
                     this.busy = false;
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();

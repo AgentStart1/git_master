@@ -159,12 +159,12 @@ class App:
         assert 0 < local_x < root["width"] and 0 < local_y < root["height"], f"{node_id} outside viewport"
         return round(x + local_x * scale_x), round(y + local_y * scale_y)
 
-    def click(self, node_id, *, button="left"):
+    def click(self, node_id, *, button="left", await_operation=True):
         import pyautogui
         position = self.point(node_id)
         before = self.tree()
         pyautogui.click(*position, button=button)
-        if button == "left" and self.is_operation(node_id, before):
+        if await_operation and button == "left" and self.is_operation(node_id, before):
             self.wait_completion(before["state"]["status_revision"])
 
     @staticmethod
@@ -206,10 +206,12 @@ class App:
         entry = next(node["state"] for node in walk(tree) if node.get("state", {}).get("path") == relative)
         self.click(f"change-{action}-{entry['index']}")
 
-    def prompt(self, accept):
+    def prompt(self, accept, *, await_operation=True):
         tree = self.wait(lambda tree: find(tree, "test-prompt"), "confirmation dialog")
         revision = tree["state"]["status_revision"]
         self.click(f"test-prompt-answer-{0 if accept else 1}")
+        if not await_operation:
+            return self.wait(lambda tree: not find(tree, "test-prompt"), "answered confirmation")
         result = self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
         if accept:
             return self.wait_completion(revision)

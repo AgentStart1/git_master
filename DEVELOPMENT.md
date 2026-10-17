@@ -68,7 +68,7 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 
 ### Coverage audit additions
 
-The suite now has 42 cases: 24 P0 and 18 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+The suite now has 47 cases: 24 P0 and 23 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
 
 | Priority | Previously missing workflow | Assertions |
 |---|---|---|
@@ -85,15 +85,23 @@ The suite now has 42 cases: 24 P0 and 18 P1. The audit compared the worktree act
 | P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
 | P1 | Native workspace picker (Windows) | Cancel preserves selection; choosing another workspace clears old details and rescans |
 
-The native folder-picker case runs on Windows and is explicitly skipped in Linux CI, which has no desktop portal session. The remaining 41 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, clipboard integration, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
+The native folder-picker case runs on Windows and is explicitly skipped in Linux CI, which has no desktop portal session. The remaining 46 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, clipboard integration, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
 
 `GIT_MASTER_TEST_CONFIG_DIR` redirects libgit2's system/global/XDG/ProgramData configuration search paths in the test build before threads start. Git subprocesses separately use `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; both configuration readers must be isolated. Production builds do not honor the test-only setting.
 
 ## Test observation and confirmation boundary
 
+### Asynchronous navigation regressions
+
+Five desktop cases hold actual Git operations at bounded pre-push, reference-transaction and post-checkout hooks. They load another repository's Change/Stash while Push is pending, preserve another repository's branch filter after deletion, reject a prior history snapshot after A→B→A navigation, and keep same-relative-path submodules isolated by parent identity. Four of these cases fail against the pre-fix executable; the submodule case is an additional boundary check. Release files control ordering, and fixture teardown releases every hook even after assertions fail; no fixed delay determines correctness.
+
+Only these concurrency cases use `await_operation=False`: they require the hook's entered marker and an observable busy state, navigate while the hook is blocked, release it, and finally require a new idle completion. Normal operation clicks keep automatic completion acknowledgement. Hook fixtures are checked out with LF endings on Windows as well as Linux.
+
+Selection and workspace transitions invalidate read-request ownership. A completed old read cannot clear a newer loading state or publish its snapshot. Mutations remain serialized and continue against their original Git target; a superseded navigation causes current details/filter data to be reloaded rather than restoring the operation's previous view. Visible Change/Stash data is refreshed after mutations without overwriting the operation outcome message.
+
 Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmed destructive actions have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
 
-Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 42 desktop E2E cases and also run in CI.
+Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 47 desktop E2E cases and also run in CI.
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 

@@ -40,6 +40,7 @@ impl GitMasterApp {
                                 this.refresh_pushed_repo_details(index, &path, cx);
                             }
                         }
+                        this.refresh_visible_worktree(cx);
                     }
                     cx.notify();
                 })

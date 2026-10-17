@@ -39,6 +39,8 @@ pub struct GitMasterApp {
     pub worktree: Option<(PathBuf, Result<crate::worktree::Snapshot, String>)>,
     pub worktree_task: Option<Task<()>>,
     pub worktree_loading: bool,
+    pub worktree_revision: u64,
+    pub navigation_revision: u64,
     pub selected_commit: Option<(PathBuf, String)>,
     pub commit_text: Option<Result<String, String>>,
     pub commit_task: Option<Task<()>>,
@@ -87,6 +89,8 @@ impl GitMasterApp {
             worktree: None,
             worktree_task: None,
             worktree_loading: false,
+            worktree_revision: 0,
+            navigation_revision: 0,
             selected_commit: None,
             commit_text: None,
             commit_task: None,
@@ -132,6 +136,8 @@ impl GitMasterApp {
     /// The actual `scan_repos` work happens off-thread; results land via
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
+        self.navigation_revision += 1;
+        self.invalidate_worktree();
         self.close_commit_details();
         self.parent_dir = Some(path);
         self.repos.clear();
@@ -164,6 +170,8 @@ impl GitMasterApp {
     /// Mark a repo as selected and enter the loading state. The detail and
     /// commit-log work happens off-thread; results land via [`apply_detail`].
     pub fn begin_select(&mut self, index: usize) {
+        self.navigation_revision += 1;
+        self.invalidate_worktree();
         self.close_commit_details();
         self.detail_task = None;
         self.selected = Some(RepoSelection::Repo(index));
@@ -183,6 +191,8 @@ impl GitMasterApp {
         submodule_index: usize,
         relative_path: PathBuf,
     ) {
+        self.navigation_revision += 1;
+        self.invalidate_worktree();
         self.close_commit_details();
         self.detail_task = None;
         self.selected = Some(RepoSelection::Submodule {
@@ -232,6 +242,17 @@ impl GitMasterApp {
 
     pub fn set_tab(&mut self, tab: DetailTab) {
         self.active_tab = tab;
+    }
+
+    pub fn invalidate_worktree(&mut self) {
+        self.worktree_revision += 1;
+        self.worktree_task = None;
+        self.worktree_loading = false;
+        self.worktree = None;
+    }
+
+    pub fn owns_worktree_request(&self, revision: u64) -> bool {
+        self.worktree_revision == revision
     }
 
     pub fn set_log_view_mode(&mut self, mode: LogViewMode) {
@@ -306,6 +327,10 @@ impl GitMasterApp {
                 .iter()
                 .position(|submodule| submodule.relative_path == *relative_path)
         }) else {
+            self.navigation_revision += 1;
+            self.invalidate_worktree();
+            self.close_commit_details();
+            self.detail_task = None;
             self.selected = None;
             self.detail = None;
             self.submodule_detail = None;
@@ -650,5 +675,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(request.graph_path, Some(PathBuf::from("/repos/repo/lib")));
+    }
+    #[::core::prelude::v1::test]
+    fn navigation_invalidates_read_ownership_even_after_returning_to_same_repo() {
+        let mut app = GitMasterApp::new();
+        app.begin_select(0);
+        let original = app.worktree_revision;
+        let navigation = app.navigation_revision;
+        app.worktree_loading = true;
+        app.begin_select(1);
+        assert!(!app.worktree_loading);
+        app.begin_select(0);
+        assert!(!app.owns_worktree_request(original));
+        assert!(app.navigation_revision > navigation);
+        let selected = app.worktree_revision;
+        app.begin_scan(PathBuf::from("other-workspace"));
+        assert!(!app.owns_worktree_request(selected));
+        app.begin_select_submodule(0, 0, PathBuf::from("module"));
+        let read = app.worktree_revision;
+        app.invalidate_worktree();
+        assert!(!app.owns_worktree_request(read));
+        app.repos = vec![repo(
+            "repo",
+            "/repo",
+            vec![submodule("module", "/repo/module", "module")],
+        )];
+        app.begin_select_submodule(0, 0, PathBuf::from("module"));
+        let removed = app.worktree_revision;
+        app.worktree_loading = true;
+        app.apply_repo_refresh(0, Path::new("/repo"), Some(repo("repo", "/repo", vec![])));
+        assert!(app.selected.is_none());
+        assert!(!app.worktree_loading);
+        assert!(!app.owns_worktree_request(removed));
     }
 }

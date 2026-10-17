@@ -1,6 +1,7 @@
 pub mod commit_canvas;
 pub mod commit_details;
 pub mod detail_panel;
+mod detail_refresh;
 pub mod repo_list;
 pub mod theme;
 pub mod top_bar;

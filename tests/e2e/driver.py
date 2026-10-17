@@ -55,6 +55,9 @@ class App:
         self.rpc_id = 0
         try:
             wait_for(lambda: self.tree(), description="application RPC/frame")
+            # Xvfb has no window manager to focus new windows. GPUI can keep an
+            # unfocused window idle, so focus before waiting for painted controls.
+            self.window_geometry()
             self.wait(lambda tree: str(workspace) in text(tree) and not tree["state"]["scanning"], "workspace scan")
         except BaseException:
             self.save_failure()

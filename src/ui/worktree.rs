@@ -282,20 +282,7 @@ impl GitMasterApp {
             }
         }
         body.child(list)
-            .child(
-                div()
-                    .id("worktree-diff")
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .overflow_y_scroll()
-                    .overflow_x_scroll()
-                    .p(px(8.0))
-                    .bg(rgb(theme::BG_SURFACE))
-                    .text_sm()
-                    .child(if snapshot.diff.is_empty() && stash {
-                        "Select a stash to view its saved files and differences. Apply keeps the stash; Pop applies and removes it.".to_owned()
-                    } else { snapshot.diff.clone() }),
-            )
+            .child(super::diff_view::render(&snapshot.diff_rows, stash))
             .into_any_element()
     }
 }

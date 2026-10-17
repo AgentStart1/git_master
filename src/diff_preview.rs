@@ -1,3 +1,4 @@
+use crate::diff_model::{self, DiffRow, RenderedDiff, RowKind};
 use git2::{Diff, DiffFile, DiffFormat, FileMode, Repository};
 use std::io::Read;
 use std::path::PathBuf;
@@ -47,22 +48,30 @@ impl DiffRenderer {
         repo: &Repository,
         diff: Diff<'_>,
         workdir: bool,
-    ) -> Result<String, git2::Error> {
+    ) -> Result<RenderedDiff, git2::Error> {
         if diff.deltas().len() == 0 {
-            return unified(diff);
+            return Ok(RenderedDiff {
+                text: "No changes.\n".into(),
+                rows: vec![],
+            });
         }
         if let Some(program) = &self.program {
-            match self.render_difft(program, repo, &diff, workdir) {
-                Ok(text) => return Ok(format!("Diff renderer: difft\n{text}")),
-                Err(_) => {
-                    return Ok(format!(
-                        "Diff renderer: Git (difft could not render this preview)\n{}",
-                        unified(diff)?
-                    ));
-                }
+            if let Ok(mut document) = self.render_difft(program, repo, &diff, workdir) {
+                document.text.insert_str(0, "Diff renderer: difft\n");
+                return Ok(document);
             }
+            let text = format!(
+                "Diff renderer: Git (difft could not render this preview)\n{}",
+                unified(diff)?
+            );
+            let rows = diff_model::from_unified(
+                text.lines().skip(1).collect::<Vec<_>>().join("\n").as_str(),
+            );
+            return Ok(RenderedDiff { text, rows });
         }
-        unified(diff)
+        let text = unified(diff)?;
+        let rows = diff_model::from_unified(&text);
+        Ok(RenderedDiff { text, rows })
     }
 
     fn render_difft(
@@ -71,13 +80,16 @@ impl DiffRenderer {
         repo: &Repository,
         diff: &Diff<'_>,
         workdir: bool,
-    ) -> std::io::Result<String> {
+    ) -> std::io::Result<RenderedDiff> {
         let temp = tempfile::tempdir()?;
         let deadline = Instant::now() + Duration::from_secs(15);
-        let mut text = String::new();
+        let mut document = RenderedDiff::default();
         for delta in diff.deltas() {
-            if text.len() >= PREVIEW_LIMIT {
-                text.push_str("\n[Preview truncated at 512 KiB]\n");
+            if document.text.len() >= PREVIEW_LIMIT || document.rows.len() >= diff_model::ROW_LIMIT
+            {
+                document
+                    .rows
+                    .push(DiffRow::label(RowKind::Note, "Preview truncated."));
                 break;
             }
             let old = delta.old_file();
@@ -89,8 +101,8 @@ impl DiffRenderer {
             let new_data = content(repo, &new, workdir)?;
             let old_path = temp.path().join("old");
             let new_path = temp.path().join("new");
-            std::fs::write(&old_path, old_data)?;
-            std::fs::write(&new_path, new_data)?;
+            std::fs::write(&old_path, &old_data)?;
+            std::fs::write(&new_path, &new_data)?;
             let display = new
                 .path()
                 .or_else(|| old.path())
@@ -99,7 +111,7 @@ impl DiffRenderer {
             // Git's external-diff protocol carries the original name for language detection
             // without allowing repository paths to become command options or shell code.
             command
-                .args(["--color=never", "--display=inline", "--width=120"])
+                .args(["--color=never", "--display=json", "--width=120"])
                 .arg("--")
                 .arg(display)
                 .arg(&old_path)
@@ -114,14 +126,34 @@ impl DiffRenderer {
             {
                 command.env_remove(key);
             }
-            text.push_str(&capture(
-                &mut command,
-                deadline,
-                PREVIEW_LIMIT - text.len(),
-            )?);
-            text.push('\n');
+            command.env("DFT_UNSTABLE", "yes");
+            let json = capture(&mut command, deadline, 4 * 1024 * 1024)?;
+            let mut rows =
+                diff_model::from_difft(&json, &display.to_string_lossy(), &old_data, &new_data)
+                    .map_err(std::io::Error::other)?;
+            if rows.is_empty() && old.mode() != new.mode() {
+                rows.push(DiffRow::label(RowKind::File, display.to_string_lossy()));
+                rows.push(DiffRow::label(
+                    RowKind::Note,
+                    format!(
+                        "File mode changed: {:06o} → {:06o}",
+                        i32::from(old.mode()),
+                        i32::from(new.mode())
+                    ),
+                ));
+            }
+            for row in &rows {
+                let prefix = match row.kind {
+                    RowKind::Added => "+",
+                    RowKind::Removed => "-",
+                    _ => "",
+                };
+                document.text.push_str(&format!("{prefix}{}\n", row.text));
+            }
+            document.rows.extend(rows);
         }
-        Ok(text)
+        document.limit();
+        Ok(document)
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::diff_model::{DiffRow, RenderedDiff, RowKind};
 use crate::diff_preview::DiffRenderer;
 use git2::{DiffOptions, Oid, Repository, StatusOptions};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ pub struct Snapshot {
     pub changes: Vec<Change>,
     pub stashes: Vec<Stash>,
     pub diff: String,
+    pub diff_rows: Vec<DiffRow>,
 }
 #[derive(Clone)]
 pub enum Action {
@@ -71,7 +73,7 @@ impl WorktreeHost {
         if self.action.mutates() {
             let _ = crate::operation_log::append(&format!("worktree operation={operation} START"));
         }
-        let result = execute_with_renderer(&self.path, &self.action, renderer);
+        let result = execute_document(&self.path, &self.action, renderer);
         if self.action.mutates() {
             let _ = crate::operation_log::append(&format!(
                 "worktree operation={operation} END success={} elapsed_ms={}",
@@ -81,7 +83,8 @@ impl WorktreeHost {
         }
         let snapshot = load(&self.path).map(|mut snapshot| {
             if let Ok(text) = &result {
-                snapshot.diff = text.clone();
+                snapshot.diff = text.text.clone();
+                snapshot.diff_rows = text.rows.clone();
             }
             snapshot
         });
@@ -92,11 +95,20 @@ impl WorktreeHost {
 fn execute(path: &Path, action: &Action) -> Result<String, String> {
     execute_with_renderer(path, action, &DiffRenderer::default())
 }
+#[cfg(test)]
 fn execute_with_renderer(
     path: &Path,
     action: &Action,
     renderer: &DiffRenderer,
 ) -> Result<String, String> {
+    execute_document(path, action, renderer).map(|document| document.text)
+}
+fn execute_document(
+    path: &Path,
+    action: &Action,
+    renderer: &DiffRenderer,
+) -> Result<RenderedDiff, String> {
+    let mut document = RenderedDiff::default();
     let mut repo = Repository::open(path).map_err(|e| e.to_string())?;
     let result = (|| -> Result<String, git2::Error> {
         match action {
@@ -111,11 +123,12 @@ fn execute_with_renderer(
                     .show_untracked_content(true);
                 let staged = repo.diff_tree_to_index(tree.as_ref(), None, Some(&mut opts))?;
                 let work = repo.diff_index_to_workdir(None, Some(&mut opts))?;
-                return Ok(format!(
-                    "Staged\n{}\nWorking tree\n{}",
-                    renderer.render(&repo, staged, false)?,
-                    renderer.render(&repo, work, true)?
-                ));
+                let staged = renderer.render(&repo, staged, false)?;
+                let work = renderer.render(&repo, work, true)?;
+                let text = format!("Staged\n{}\nWorking tree\n{}", staged.text, work.text);
+                document.section("Staged", staged);
+                document.section("Working tree", work);
+                return Ok(text);
             }
             Action::Stage(path) => {
                 let mut index = repo.index()?;
@@ -178,10 +191,16 @@ fn execute_with_renderer(
                     base_commit.id(),
                     commit.message().unwrap_or("(No message)"),
                 );
+                document.rows.extend(
+                    text.lines()
+                        .filter(|line| !line.is_empty())
+                        .map(|line| DiffRow::label(RowKind::Note, line)),
+                );
                 // The index parent preserves staged edits that a combined diff can hide.
                 append_stash_section(
                     &repo,
                     renderer,
+                    &mut document,
                     &mut text,
                     "Staged changes",
                     repo.diff_tree_to_tree(Some(&base), Some(&staged), None)?,
@@ -189,6 +208,7 @@ fn execute_with_renderer(
                 append_stash_section(
                     &repo,
                     renderer,
+                    &mut document,
                     &mut text,
                     "Working tree changes",
                     repo.diff_tree_to_tree(Some(&staged), Some(&working), None)?,
@@ -198,6 +218,7 @@ fn execute_with_renderer(
                     append_stash_section(
                         &repo,
                         renderer,
+                        &mut document,
                         &mut text,
                         "Untracked files",
                         repo.diff_tree_to_tree(None, Some(&untracked), None)?,
@@ -208,7 +229,13 @@ fn execute_with_renderer(
         }
         Ok(String::new())
     })();
-    result.map_err(|e| e.to_string())
+    result
+        .map(|text| {
+            document.text = text;
+            document.limit();
+            document
+        })
+        .map_err(|e| e.to_string())
 }
 fn stash_index(repo: &mut Repository, oid: Oid) -> Result<usize, git2::Error> {
     let mut found = None;
@@ -226,6 +253,7 @@ fn stash_index(repo: &mut Repository, oid: Oid) -> Result<usize, git2::Error> {
 fn append_stash_section(
     repo: &Repository,
     renderer: &DiffRenderer,
+    document: &mut RenderedDiff,
     text: &mut String,
     title: &str,
     diff: git2::Diff<'_>,
@@ -256,7 +284,9 @@ fn append_stash_section(
         text.push_str("  [File list limited to 200 entries]\n");
     }
     text.push('\n');
-    text.push_str(&renderer.render(repo, diff, false)?);
+    let rendered = renderer.render(repo, diff, false)?;
+    text.push_str(&rendered.text);
+    document.section(title, rendered);
     Ok(())
 }
 
@@ -363,6 +393,7 @@ pub fn load(path: &Path) -> Result<Snapshot, String> {
         changes,
         stashes,
         diff: String::new(),
+        diff_rows: vec![],
     })
 }
 
@@ -424,6 +455,24 @@ mod tests {
             execute_with_renderer(&f.0, &Action::Diff("tracked.txt".into()), &renderer).unwrap();
         assert!(preview.contains("difft could not render"));
         assert!(preview.contains("+modified"));
+        let document =
+            execute_document(&f.0, &Action::Diff("tracked.txt".into()), &renderer).unwrap();
+        assert!(
+            !document
+                .rows
+                .iter()
+                .any(|row| row.kind == RowKind::Section && row.text == "Staged")
+        );
+        assert!(document.rows.iter().any(|row| row.kind == RowKind::Added
+            && row.new_line == Some(1)
+            && !row.highlights.is_empty()));
+        assert!(
+            document
+                .rows
+                .iter()
+                .any(|row| row.kind == RowKind::Removed && row.old_line == Some(1))
+        );
+
         assert!(preview.contains("Staged\nNo changes."));
     }
 

@@ -12,3 +12,5 @@ pub mod log_view;
 pub mod canvas_interaction;
 
 pub mod worktree;
+
+pub mod diff_view;

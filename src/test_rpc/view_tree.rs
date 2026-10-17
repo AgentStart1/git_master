@@ -416,7 +416,32 @@ impl TestViewTreeSnapshot {
         node.with_child(
             ViewNode::new("text")
                 .with_id("worktree-diff")
-                .with_text(&data.diff),
+                .with_text(
+                    &data
+                        .diff_rows
+                        .iter()
+                        .map(|row| row.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+                .with_children(
+                    data.diff_rows
+                        .iter()
+                        .map(|row| {
+                            ViewNode::new(match row.kind {
+                                crate::diff_model::RowKind::Added => "diff-added",
+                                crate::diff_model::RowKind::Removed => "diff-removed",
+                                _ => "diff-row",
+                            })
+                            .with_text(&format!(
+                                "{} {} {}",
+                                row.old_line.map(|n| n.to_string()).unwrap_or_default(),
+                                row.new_line.map(|n| n.to_string()).unwrap_or_default(),
+                                row.text
+                            ))
+                        })
+                        .collect(),
+                ),
         )
     }
 
@@ -692,6 +717,10 @@ mod tests {
                     message: "Saved edits".into(),
                 }],
                 diff: "+preview".into(),
+                diff_rows: vec![crate::diff_model::DiffRow::label(
+                    crate::diff_model::RowKind::Note,
+                    "+preview",
+                )],
             }),
         ));
         let find = |node: &ViewNode, id: &str| {

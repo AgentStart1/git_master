@@ -2,6 +2,7 @@ mod app_state;
 mod batch_ops;
 mod commit_details;
 mod desktop_actions;
+mod diff_model;
 mod diff_preview;
 mod git_ops;
 mod models;

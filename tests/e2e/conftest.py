@@ -65,3 +65,12 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     if report.failed:
         item.failed = True
+
+
+@pytest.fixture(scope="session")
+def failing_difft(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("failing-difft")
+    program = folder / ("difft.exe" if sys.platform == "win32" else "difft")
+    subprocess.run(["rustc", "--edition=2024", str(ROOT / "tests/fixtures/difft_failure.rs"),
+        "-o", str(program)], check=True)
+    return folder

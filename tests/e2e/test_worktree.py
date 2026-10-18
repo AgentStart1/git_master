@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import pytest
 from driver import commit_all, find, git, make_repo, status, text, wait_for, walk
 
@@ -129,7 +130,12 @@ def test_conflicting_stash_restore_keeps_stash_and_local_edits(app_factory, isol
 
 @pytest.mark.p1
 @pytest.mark.parametrize("edited", [False, True])
-def test_rename_preview_keeps_old_content_and_worktree_edits(app_factory, isolated_git, edited):
+@pytest.mark.parametrize("fallback", [False, True])
+def test_rename_preview_keeps_old_content_and_worktree_edits(app_factory, isolated_git, edited, fallback, failing_difft, monkeypatch):
+    calls = isolated_git / "difft-calls"
+    if fallback:
+        monkeypatch.setenv("PATH", str(failing_difft) + os.pathsep + os.environ["PATH"])
+        monkeypatch.setenv("GIT_MASTER_TEST_DIFFT_CALLS", str(calls))
     root, repo = worktree(app_factory, isolated_git)
     base = "".join(f"unchanged line {n}\n" for n in range(20))
     (repo / "tracked.txt").write_text(base, encoding="utf-8")
@@ -154,15 +160,71 @@ def test_rename_preview_keeps_old_content_and_worktree_edits(app_factory, isolat
     assert "tracked.txt" in output and path.name in output
     assert "Staged" in output and "Working tree" in output
     assert "unrelated sentinel" not in output and "renamed1.txt" not in output
-    rows = list(walk(preview))
-    assert not any(r["node_type"] == "diff-added" and "unchanged line 0" in text(r) for r in rows)
+    sections = rename_diff_sections(preview)
+    staged_rows, working_rows = sections["Staged"], sections["Working tree"]
+    assert not has_diff_line(staged_rows, "diff-added", "unchanged line 0")
     if edited:
-        assert any(r["node_type"] == "diff-removed" and "unchanged line 10" in text(r) for r in rows)
-        assert any(r["node_type"] == "diff-added" and "staged rename edit" in text(r) for r in rows)
-    assert any(r["node_type"] == "diff-removed" and "unchanged line 11" in text(r) for r in rows)
+        assert has_diff_line(staged_rows, "diff-removed", "unchanged line 10", 11)
+        assert has_diff_line(staged_rows, "diff-added", "staged rename edit", 11)
+    else:
+        assert not any(r["node_type"] in ("diff-added", "diff-removed") for r in staged_rows)
+    assert not has_diff_line(staged_rows, "diff-added", "working rename edit")
+    assert has_diff_line(working_rows, "diff-removed", "unchanged line 11", 12)
+    assert has_diff_line(working_rows, "diff-added", "working rename edit", 12)
+    if fallback:
+        assert calls.read_text().splitlines() == ["render", "render"], "both previews must actually attempt difft"
     assert git(repo, "ls-files", "--stage", "-z") == before_index
     assert git(repo, "status", "--porcelain", "-z") == before_status
     assert path.read_bytes() == before and not (repo / "tracked.txt").exists()
     import pyautogui
     x, y, width, height = app.window_geometry()
     pyautogui.screenshot(region=(x, y, width, height)).save(app.artifacts / "rename-preview.png")
+
+    # Stage the newer working content, then preview again instead of accepting an old frame.
+    app.change(repo, path.name, "stage")
+    assert git(repo, "rev-parse", f":{path.name}").strip() == git(repo, "hash-object", "--no-filters", str(path)).strip()
+    assert git(repo, "diff", "--name-only", "--", path.name) == ""
+    app.change(repo, path.name, "diff")
+    staged_preview = find(app.tree(), "worktree-diff")
+    sections = rename_diff_sections(staged_preview)
+    assert set(sections) == {"Staged"}
+    assert "tracked.txt" in text(staged_preview) and path.name in text(staged_preview)
+    assert has_diff_line(sections["Staged"], "diff-added", "working rename edit", 12)
+
+    app.change(repo, path.name, "unstage")
+    assert git(repo, "diff", "--cached", "--name-only") == ""
+    assert git(repo, "ls-files", "--stage", "--", "tracked.txt")
+    assert not git(repo, "ls-files", "--stage", "--", path.name)
+    app.change(repo, path.name, "diff")
+    sections = rename_diff_sections(find(app.tree(), "worktree-diff"))
+    assert set(sections) == {"Working tree"}
+    assert has_diff_line(sections["Working tree"], "diff-added", "working rename edit", 12)
+    assert not any(r["node_type"] == "diff-removed" for r in sections["Working tree"])
+    app.change(repo, "tracked.txt", "diff")
+    sections = rename_diff_sections(find(app.tree(), "worktree-diff"))
+    assert set(sections) == {"Working tree"}
+    assert has_diff_line(sections["Working tree"], "diff-removed", "unchanged line 11", 12)
+    assert not has_diff_line(sections["Working tree"], "diff-added", "working rename edit")
+    assert path.read_bytes() == before and not (repo / "tracked.txt").exists()
+    assert (repo / "renamed1.txt").read_text() == "unrelated sentinel\n"
+    if fallback:
+        assert calls.read_text().splitlines() == ["render"] * 5
+
+
+def rename_diff_sections(preview):
+    sections = {}
+    current = None
+    for row in preview["children"]:
+        if row.get("text", "").strip() in ("Staged", "Working tree"):
+            current = row["text"].strip()
+            sections[current] = []
+        else:
+            assert current is not None, "diff row must belong to a section"
+            sections[current].append(row)
+    return sections
+
+
+def has_diff_line(rows, kind, content, number=None):
+    line_key = "new_line" if kind == "diff-added" else "old_line"
+    return any(row["node_type"] == kind and content in text(row) and (
+        number is None or row.get("state", {}).get(line_key) == number) for row in rows)

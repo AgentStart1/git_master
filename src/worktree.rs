@@ -557,15 +557,62 @@ mod tests {
             )
             .unwrap();
             std::fs::write(f.0.join("renamed1.txt"), "unrelated sentinel\n").unwrap();
-            for renderer in [
-                DiffRenderer::default(),
-                DiffRenderer::with_program(f.0.join("missing-difft")),
-                DiffRenderer::detect(),
+            for (mode, renderer) in [
+                ("git", DiffRenderer::default()),
+                (
+                    "fallback",
+                    DiffRenderer::with_program(f.0.join("missing-difft")),
+                ),
+                ("installed", DiffRenderer::detect()),
             ] {
                 for path in ["tracked.txt", "renamed[1].txt"] {
                     let doc =
                         execute_document(&f.0, &Action::Diff(path.into()), &renderer).unwrap();
                     let (index, work) = doc.text.split_once("Working tree\n").unwrap();
+                    let expected_renders = if path == "tracked.txt" { 1 } else { 2 };
+                    if mode == "fallback" {
+                        assert_eq!(
+                            doc.text.matches("difft could not render").count(),
+                            expected_renders
+                        );
+                    } else if renderer.is_available() {
+                        assert_eq!(
+                            doc.text.matches("Diff renderer: difft").count(),
+                            expected_renders,
+                            "installed difft must not silently fall back: {}",
+                            doc.text
+                        );
+                    }
+                    let work_start = doc
+                        .rows
+                        .iter()
+                        .position(|row| row.kind == RowKind::Section && row.text == "Working tree");
+                    let index_rows = &doc.rows[1..work_start.unwrap_or(doc.rows.len())];
+                    let work_rows = work_start
+                        .map(|start| &doc.rows[start + 1..])
+                        .unwrap_or(&[]);
+                    assert!(
+                        !index_rows
+                            .iter()
+                            .any(|row| row.text == "working rename edit")
+                    );
+                    if !edited {
+                        assert!(
+                            !index_rows
+                                .iter()
+                                .any(|row| matches!(row.kind, RowKind::Added | RowKind::Removed))
+                        );
+                    }
+                    if path == "renamed[1].txt" {
+                        assert!(work_rows.iter().any(|row| row.kind == RowKind::Removed
+                            && row.text == "unchanged line 11"
+                            && row.old_line == Some(12)));
+                        assert!(work_rows.iter().any(|row| row.kind == RowKind::Added
+                            && row.text == "working rename edit"
+                            && row.new_line == Some(12)));
+                    } else {
+                        assert!(work_rows.is_empty());
+                    }
                     assert!(
                         index.contains("tracked.txt") && index.contains("renamed[1].txt"),
                         "{}",
@@ -579,12 +626,12 @@ mod tests {
                             .any(|r| r.kind == RowKind::Added && r.text == "unchanged line 0")
                     );
                     if edited {
-                        assert!(
-                            doc.rows.iter().any(
-                                |r| r.kind == RowKind::Removed && r.text == "unchanged line 10"
-                            )
-                        );
-                        assert!(doc.rows.iter().any(|r| r.kind == RowKind::Added && r.text == "staged rename edit"));
+                        assert!(index_rows.iter().any(|r| r.kind == RowKind::Removed
+                            && r.text == "unchanged line 10"
+                            && r.old_line == Some(11)));
+                        assert!(index_rows.iter().any(|r| r.kind == RowKind::Added
+                            && r.text == "staged rename edit"
+                            && r.new_line == Some(11)));
                     }
                     if path == "renamed[1].txt" {
                         assert!(work.contains("working rename edit"));

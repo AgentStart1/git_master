@@ -137,9 +137,7 @@ class App:
             self.window = candidates[0]
             user32.SetForegroundWindow(self.window)
             def focused():
-                pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
-                return pid.value == self.proc.pid
+                return user32.GetForegroundWindow() == self.window
             if not focused():
                 # Windows can reject programmatic activation from a background runner.
                 # Raise only our window, then activate it with a real click on its header.
@@ -155,6 +153,9 @@ class App:
                     user32.GetWindowThreadProcessId(target, ctypes.byref(target_pid))
                     assert target_pid.value == self.proc.pid, "activation point must belong to test process"
                     pyautogui.click(header.x, header.y)
+                    # Input activation is asynchronous. Keep the target raised
+                    # until the selected native window actually owns focus.
+                    wait_for(focused, timeout=3, description="raised test window foreground")
                 finally:
                     user32.SetWindowPos(self.window, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
             wait_for(focused, timeout=3, description="test window foreground")

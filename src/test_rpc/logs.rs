@@ -3,6 +3,7 @@ use gpui::{Bounds, Pixels};
 use std::collections::HashMap;
 
 pub struct Observation {
+    pub viewport: Bounds<Pixels>,
     pub completed_reads: u64,
     pub generation: u64,
     pub poll_ticks: u64,
@@ -71,13 +72,18 @@ pub fn build_tree(
         );
     }
 
-    if let Some(viewport) = reg.get("logs-content") {
+    for (id, fully_visible) in [("logs-visible-anchor", true), ("logs-top-row", false)] {
+        let viewport = &observation.viewport;
         let anchor = reg
             .iter()
             .filter_map(|(id, bounds)| {
                 let index = id.strip_prefix("logs-row-")?.parse::<usize>().ok()?;
-                (bounds.origin.y >= viewport.origin.y && bounds.bottom() <= viewport.bottom())
-                    .then_some((index, bounds))
+                (if fully_visible {
+                    bounds.origin.y >= viewport.origin.y && bounds.bottom() <= viewport.bottom()
+                } else {
+                    bounds.bottom() > viewport.top() && bounds.top() < viewport.bottom()
+                })
+                .then_some((index, bounds))
             })
             .min_by_key(|(index, _)| *index);
         if let Some((index, bounds)) = anchor {
@@ -90,13 +96,16 @@ pub fn build_tree(
                 _ => message,
             };
             let mut node = ViewNode::new("text")
-                .with_id("logs-visible-anchor")
+                .with_id(id)
                 .with_text(row)
                 .with_state(serde_json::json!({"index":index}));
             node.bounds = Some(Rect::from_gpui(bounds));
             panel = panel.with_child(node);
         }
     }
+    let mut viewport = ViewNode::new("panel").with_id("logs-viewport");
+    viewport.bounds = Some(Rect::from_gpui(&observation.viewport));
+    panel = panel.with_child(viewport);
 
     if let Some(state) = &mut panel.state {
         state["following"] = serde_json::json!(viewer.following);

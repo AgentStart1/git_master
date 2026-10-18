@@ -68,7 +68,7 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 
 ### Coverage audit additions
 
-The suite now has 85 cases: 26 P0 and 59 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+The suite now has 90 cases: 26 P0 and 64 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
 
 | Priority | Previously missing workflow | Assertions |
 |---|---|---|
@@ -85,7 +85,7 @@ The suite now has 85 cases: 26 P0 and 59 P1. The audit compared the worktree act
 | P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
 | P1 | Native workspace picker (Windows) | Cancel preserves selection; choosing another workspace clears old details and rescans |
 
-The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 83 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
+The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 88 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
 
 `GIT_MASTER_TEST_CONFIG_DIR` redirects libgit2's system/global/XDG/ProgramData configuration search paths in the test build before threads start. Git subprocesses separately use `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; both configuration readers must be isolated. Production builds do not honor the test-only setting.
 
@@ -109,7 +109,7 @@ Selection and workspace transitions invalidate read-request ownership. A complet
 
 Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmation and cancellation both have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
 
-Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 85 desktop E2E cases and also run in CI.
+Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 90 desktop E2E cases and also run in CI.
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 
@@ -148,3 +148,5 @@ Large log text is prepared on the reader worker as immutable display rows, each 
 The log body uses GPUI ListState to measure and paint only visible rows plus a small overdraw region; bounding the total bytes or each text run alone does not bound a frame containing thousands of Unicode lines. Display rows are shared immutable worker output. Replacing a followed snapshot resets list measurements and anchors at the end; a paused snapshot and its list remain unchanged until resume. For offscreen end entries, tests compare the first fully visible real row (index, text and painted y) rather than inventing end bounds. They still require the real final row to be painted inside the viewport after follow or downward scrolling.
 
 X11 wheel input is a batch of native notch events. Pause tests establish their baseline only after the same fully visible row (index, text and painted y) survives two timer-driven painted frames. This settling occurs before changing log files or releasing a held result; post-update assertions remain immediate and strict. Waiting only for following=false can capture the first notch and falsely blame the remaining legitimate wheel movement on an async read.
+
+Five geometry regressions exercise native window resizing, paused wrapped-row anchors away from tail clamping, rapid wheel reversals with buffered reads, pausing the initial read before scrolling near the beginning, and a final row clipped by the list padding. Read gates prevent later polls from repairing resize/follow state. The actual ListState viewport and first partially visible row have read-only painted bounds. Follow resumes only after a frame paints the actual tail inside this viewport, with input/frame ownership rejecting superseded checks. The test snapshot captures the state rendered by that frame before follow can adopt a pending snapshot. Resizing a paused view measures only its bounded anchor row with the shared font/style and retains its fractional position; GPUI invalidates the remaining row heights lazily. Native Windows activation requires the exact selected handle, and keeps the window raised until focus is acknowledged.

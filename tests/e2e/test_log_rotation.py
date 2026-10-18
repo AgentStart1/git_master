@@ -133,12 +133,5 @@ def test_oversized_final_entry_remains_readable_and_followed(
     for identifier in ("logs-follow", "logs-refresh", "logs-copy", "logs-close", "logs-content"):
         bounds = find(tree, identifier)["bounds"]
         assert 0 <= bounds["y"] < bounds["y"] + bounds["height"] <= root["height"], identifier
-    def final_wrapped_row_visible(t):
-        viewport = find(t, "logs-content")["bounds"]
-        entry = find(t, "logs-end")["bounds"]
-        bottom = entry["y"] + entry["height"]
-        # The last logical entry wraps over many screens; its final visual row,
-        # rather than the entire entry, must be inside the painted viewport.
-        return viewport["y"] < bottom <= viewport["y"] + viewport["height"]
-    logs.wait(final_wrapped_row_visible, "oversized final entry followed")
+    logs.wait(end_visible, "oversized final entry followed")
     screenshot(logs, "oversized-final-entry.png")

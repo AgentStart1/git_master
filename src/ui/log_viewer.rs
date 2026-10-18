@@ -8,6 +8,11 @@ pub struct LogsWindow {
     viewer: Viewer,
     scroll: ListState,
     rows: std::sync::Arc<[String]>,
+    tail_bounds: super::log_geometry::RowBounds,
+    input_revision: u64,
+    frame_revision: u64,
+    pending_end_check: Option<u64>,
+    window_size: Option<Size<Pixels>>,
     reading: bool,
     manual_requested: bool,
     completed_reads: u64,
@@ -82,6 +87,11 @@ impl GitMasterApp {
                         viewer: Viewer::new(),
                         scroll: ListState::new(1, ListAlignment::Top, px(100.0)),
                         rows: vec![String::new()].into(),
+                        tail_bounds: Default::default(),
+                        input_revision: 0,
+                        frame_revision: 0,
+                        pending_end_check: None,
+                        window_size: None,
                         reading: false,
                         manual_requested: false,
                         completed_reads: 0,
@@ -135,6 +145,38 @@ impl GitMasterApp {
 }
 
 impl LogsWindow {
+    fn preserve_wrapped_anchor(&self, previous_width: Pixels, window: &mut Window, cx: &mut App) {
+        let top = self.scroll.logical_scroll_top();
+        let Some(bounds) = self
+            .scroll
+            .bounds_for_item(top.item_ix)
+            .filter(|bounds| bounds.size.height > px(0.0))
+        else {
+            return;
+        };
+        let Some(row) = self.rows.get(top.item_ix) else {
+            return;
+        };
+        // GPUI invalidates widths but retains a pixel offset. Preserve the
+        // fraction of the wrapped row, otherwise widening can skip it.
+        let fraction = (top.offset_in_item / bounds.size.height).clamp(0.0, 1.0);
+        let width = (self.scroll.viewport_bounds().size.width + window.viewport_size().width
+            - previous_width)
+            .max(px(1.0));
+        let height = log_row(row.clone())
+            .into_any_element()
+            .layout_as_root(
+                size(AvailableSpace::Definite(width), AvailableSpace::MinContent),
+                window,
+                cx,
+            )
+            .height;
+        self.scroll.scroll_to(ListOffset {
+            item_ix: top.item_ix,
+            offset_in_item: height * fraction,
+        });
+    }
+
     fn refresh(&mut self, manual: bool, cx: &mut Context<'_, Self>) {
         if self.reading {
             self.manual_requested |= manual;
@@ -251,6 +293,8 @@ impl LogsWindow {
                         .child(label)
                         .on_click(cx.listener(move |this, _, window, cx| match id {
                             "logs-follow" => {
+                                this.input_revision += 1;
+                                this.pending_end_check = None;
                                 if this.viewer.following {
                                     this.viewer.following = false;
                                 } else {
@@ -280,13 +324,16 @@ impl LogsWindow {
                 "Showing the latest 2,000 lines, up to 256 KiB. Older entries remain in the log file."), theme::TEXT_SUBTLE),
         };
         let rows = self.rows.clone();
+        let tail_bounds = self.tail_bounds.clone();
         #[cfg(feature = "test-rpc")]
         let registry = self.bounds_registry.clone();
         let content = list(self.scroll.clone(), move |index, _, _| {
-            let row = div()
-                .min_h(px(19.2))
-                .flex_shrink_0()
-                .child(rows[index].clone());
+            let row = log_row(rows[index].clone());
+            let row = if index + 1 == rows.len() {
+                super::log_geometry::row_bounds(row, tail_bounds.clone()).into_any_element()
+            } else {
+                row.into_any_element()
+            };
             #[cfg(feature = "test-rpc")]
             {
                 let row =
@@ -364,22 +411,17 @@ impl LogsWindow {
                             .min_h(px(0.0))
                             .overflow_hidden()
                             .on_scroll_wheel(cx.listener(
-                                |this, event: &ScrollWheelEvent, window, cx| {
+                                |this, event: &ScrollWheelEvent, _, cx| {
+                                    this.input_revision += 1;
                                     let delta = event.delta.pixel_delta(px(16.0)).y;
                                     if delta > px(0.0) {
+                                        this.pending_end_check = None;
                                         this.viewer.following = false;
                                         cx.notify();
                                     } else if delta < px(0.0) {
-                                        // Read the handle after GPUI's default wheel listener moves it.
-                                        cx.defer_in(window, |this, _, cx| {
-                                            if this.scroll.max_offset_for_scrollbar().height
-                                                + this.scroll.scroll_px_offset_for_scrollbar().y
-                                                <= px(2.0)
-                                            {
-                                                this.viewer.resume();
-                                                cx.notify();
-                                            }
-                                        });
+                                        // Validate the actual final row after this input is painted.
+                                        this.pending_end_check = Some(this.input_revision);
+                                        cx.notify();
                                     }
                                 },
                             ))
@@ -390,15 +432,6 @@ impl LogsWindow {
                             .border_1()
                             .border_color(rgb(theme::BORDER))
                             .bg(rgb(theme::BG_BASE))
-                            .font_family(if cfg!(windows) {
-                                "Consolas"
-                            } else if cfg!(target_os = "macos") {
-                                "Menlo"
-                            } else {
-                                "monospace"
-                            })
-                            .text_xs()
-                            .line_height(px(19.2))
                             .text_color(rgb(color))
                             .child(content),
                     ),
@@ -409,7 +442,7 @@ impl LogsWindow {
 }
 
 impl Render for LogsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         #[cfg(feature = "test-rpc")]
         self.bounds_registry.borrow_mut().clear();
         let rows = match &self.viewer.state {
@@ -420,9 +453,27 @@ impl Render for LogsWindow {
             state => vec![state.display_text().to_owned()].into(),
         };
         if !std::sync::Arc::ptr_eq(&rows, &self.rows) {
+            self.input_revision += 1;
+            self.pending_end_check = None;
             self.scroll.reset(rows.len());
             self.rows = rows;
+        } else if !self.viewer.following {
+            if let Some(previous) = self
+                .window_size
+                .filter(|previous| previous.width != window.viewport_size().width)
+            {
+                self.preserve_wrapped_anchor(previous.width, window, cx);
+            }
         }
+        let window_size = window.viewport_size();
+        if self
+            .window_size
+            .is_some_and(|previous| previous != window_size)
+        {
+            self.input_revision += 1;
+            self.pending_end_check = None;
+        }
+        self.window_size = Some(window_size);
         if self.viewer.following {
             self.scroll.scroll_to(ListOffset {
                 item_ix: self.rows.len(),
@@ -436,46 +487,88 @@ impl Render for LogsWindow {
             .bg(rgb(theme::BG_SURFACE))
             .text_color(rgb(theme::TEXT_PRIMARY))
             .child(self.render_logs(cx));
+        self.frame_revision += 1;
+        let frame_revision = self.frame_revision;
+        let input_revision = self.input_revision;
+        self.tail_bounds.set(None);
+        let entity = cx.entity();
         #[cfg(feature = "test-rpc")]
-        {
-            let entity = cx.entity();
-            crate::test_rpc::tracked::tracked("logs-root", panel, &self.bounds_registry)
-                .after_paint(move |cx| {
-                    entity.update(cx, |this, cx| {
-                        if this
-                            .publication_owner
-                            .0
-                            .read_with(cx, |parent, _| {
-                                parent.log_window_generation != this.publication_owner.1
-                            })
-                            .unwrap_or(false)
-                        {
-                            return;
-                        }
-                        this.view_revision += 1;
-                        let tree = crate::test_rpc::logs::build_tree(
-                            &this.viewer,
-                            &this.bounds_registry.borrow(),
-                            this.view_revision,
-                            crate::test_rpc::logs::Observation {
-                                completed_reads: this.completed_reads,
-                                generation: this.publication_owner.1,
-                                poll_ticks: this.poll_ticks,
-                                active_read: this.reading.then_some(this.revision),
-                                active_read_manual: this.reading.then_some(this.active_read_manual),
-                                manual_queued: this.manual_requested,
-                            },
-                        );
-                        crate::test_rpc::server::publish_tree(
-                            &this.tree_provider,
-                            this.view_revision,
-                            tree,
-                        );
-                    });
-                })
-                .into_any_element()
-        }
-        #[cfg(not(feature = "test-rpc"))]
-        panel.into_any_element()
+        let painted_viewer = self.viewer.clone();
+        #[cfg(feature = "test-rpc")]
+        let observation = crate::test_rpc::logs::Observation {
+            viewport: Default::default(),
+            completed_reads: self.completed_reads,
+            generation: self.publication_owner.1,
+            poll_ticks: self.poll_ticks,
+            active_read: self.reading.then_some(self.revision),
+            active_read_manual: self.reading.then_some(self.active_read_manual),
+            manual_queued: self.manual_requested,
+        };
+        let panel = self.track("logs-root", panel);
+        super::log_geometry::after_paint(panel, move |cx| {
+            entity.update(cx, |this, cx| {
+                if this.frame_revision != frame_revision {
+                    return;
+                }
+                #[cfg(feature = "test-rpc")]
+                {
+                    if this
+                        .publication_owner
+                        .0
+                        .read_with(cx, |parent, _| {
+                            parent.log_window_generation != this.publication_owner.1
+                        })
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                    this.view_revision += 1;
+                    let tree = crate::test_rpc::logs::build_tree(
+                        &painted_viewer,
+                        &this.bounds_registry.borrow(),
+                        this.view_revision,
+                        crate::test_rpc::logs::Observation {
+                            viewport: this.scroll.viewport_bounds(),
+                            ..observation
+                        },
+                    );
+                    crate::test_rpc::server::publish_tree(
+                        &this.tree_provider,
+                        this.view_revision,
+                        tree,
+                    );
+                }
+                if this.pending_end_check == Some(input_revision)
+                    && this.input_revision == input_revision
+                {
+                    this.pending_end_check = None;
+                    let viewport = this.scroll.viewport_bounds();
+                    if this.tail_bounds.get().is_some_and(|tail| {
+                        tail.bottom() >= viewport.top() + px(19.2)
+                            && tail.bottom() <= viewport.bottom() + px(2.0)
+                    }) {
+                        this.viewer.resume();
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .into_any_element()
     }
+}
+
+fn log_row(text: String) -> Div {
+    div()
+        .min_h(px(19.2))
+        .flex_shrink_0()
+        .font_family(if cfg!(windows) {
+            "Consolas"
+        } else if cfg!(target_os = "macos") {
+            "Menlo"
+        } else {
+            "monospace"
+        })
+        .text_xs()
+        .line_height(px(19.2))
+        .child(text)
 }

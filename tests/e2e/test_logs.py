@@ -122,6 +122,10 @@ def assert_same_anchor(tree, previous):
 
 def scroll_up_and_pause(logs, steps):
     logs.scroll("logs-content", steps)
+    return settled_paused_scroll(logs)
+
+
+def settled_paused_scroll(logs):
     candidate = None
     since = None
     def settled(tree):
@@ -140,11 +144,12 @@ def scroll_up_and_pause(logs, steps):
 
 
 def end_visible(tree):
-    panel, last = find(tree, "logs-content"), find(tree, "logs-end")
+    panel, last = find(tree, "logs-viewport"), find(tree, "logs-end")
     if not panel or not last or not last.get("bounds"):
         return False
     a, b = panel["bounds"], last["bounds"]
-    return b["height"] > 0 and b["y"] >= a["y"] and b["y"] + b["height"] <= a["y"] + a["height"]
+    bottom = b["y"] + b["height"]
+    return b["height"] > 0 and bottom >= a["y"] + 19.2 and bottom <= a["y"] + a["height"] + 0.5
 
 
 @pytest.mark.p1

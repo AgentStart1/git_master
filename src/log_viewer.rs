@@ -57,6 +57,7 @@ impl State {
     }
 }
 
+#[derive(Clone)]
 pub struct Viewer {
     pub state: State,
     pub following: bool,

@@ -46,7 +46,7 @@ impl GitMasterApp {
                     let is_expanded = self.expanded_repos.contains(&i);
                     let has_submodules = !repo.submodules.is_empty();
                     let bg = if is_selected {
-                        rgb(theme::BG_OVERLAY)
+                        rgb(theme::ACCENT_SOFT)
                     } else {
                         rgb(theme::BG_BASE)
                     };
@@ -66,10 +66,18 @@ impl GitMasterApp {
                             .flex_row()
                             .items_center()
                             .gap(px(8.0))
-                            .px(px(10.0))
-                            .py(px(8.0))
+                            .pl(px(8.0))
+                            .pr(px(12.0))
+                            .py(px(10.0))
                             .bg(bg)
+                            .border_l_2()
+                            .border_color(if is_selected {
+                                rgb(theme::ACCENT)
+                            } else {
+                                rgb(theme::BG_BASE)
+                            })
                             .cursor_pointer()
+                            .hover(|style| style.bg(rgb(theme::BG_ELEVATED)))
                             .on_click(cx.listener(move |this, _event, _window, cx| {
                                 let Some(repo) = this.repos.get(i).cloned() else {
                                     return;
@@ -97,6 +105,7 @@ impl GitMasterApp {
                                                 log_entries,
                                                 canvas_layout,
                                             );
+                                            this.refresh_visible_worktree(cx);
                                             cx.notify();
                                         })
                                         .ok();
@@ -113,28 +122,31 @@ impl GitMasterApp {
                                 }),
                             )
                             .child(
-                                div()
-                                    .id(ElementId::Name(format!("repo-{i}-toggle").into()))
-                                    .w(px(14.0))
-                                    .text_xs()
-                                    .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        cx.stop_propagation();
-                                        if this
-                                            .repos
-                                            .get(i)
-                                            .is_some_and(|repo| !repo.submodules.is_empty())
-                                        {
-                                            this.toggle_repo_expanded(i);
-                                            cx.notify();
-                                        }
-                                    }))
-                                    .child(if has_submodules {
-                                        if is_expanded { "▾" } else { "▸" }
-                                    } else {
-                                        ""
-                                    }),
+                                self.track(
+                                    &format!("repo-{i}-toggle"),
+                                    div()
+                                        .id(ElementId::Name(format!("repo-{i}-toggle").into()))
+                                        .w(px(16.0))
+                                        .text_xs()
+                                        .text_color(rgb(theme::TEXT_SUBTLE))
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _event, _window, cx| {
+                                            cx.stop_propagation();
+                                            if this
+                                                .repos
+                                                .get(i)
+                                                .is_some_and(|repo| !repo.submodules.is_empty())
+                                            {
+                                                this.toggle_repo_expanded(i);
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .child(if has_submodules {
+                                            if is_expanded { "▾" } else { "▸" }
+                                        } else {
+                                            ""
+                                        }),
+                                ),
                             )
                             .child(
                                 div()
@@ -142,12 +154,13 @@ impl GitMasterApp {
                                     .flex_col()
                                     .flex_grow()
                                     .overflow_x_hidden()
+                                    .gap(px(3.0))
                                     .child(div().text_sm().child(repo.name.clone()))
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(rgb(theme::TEXT_SUBTLE))
-                                            .child(format!("Branch: {}", repo.current_branch)),
+                                            .child(repo.current_branch.clone()),
                                     )
                                     .children(repo.remote_statuses.iter().map(|status| {
                                         div()
@@ -173,7 +186,7 @@ impl GitMasterApp {
                                     relative_path: submodule.relative_path.clone(),
                                 });
                             let bg = if is_selected {
-                                rgb(theme::BG_OVERLAY)
+                                rgb(theme::ACCENT_SOFT)
                             } else {
                                 rgb(theme::BG_BASE)
                             };
@@ -209,10 +222,17 @@ impl GitMasterApp {
                                 .items_center()
                                 .gap(px(8.0))
                                 .pl(px(34.0))
-                                .pr(px(10.0))
-                                .py(px(6.0))
+                                .pr(px(12.0))
+                                .py(px(8.0))
                                 .bg(bg)
+                                .border_l_2()
+                                .border_color(if is_selected {
+                                    rgb(theme::ACCENT)
+                                } else {
+                                    rgb(theme::BG_BASE)
+                                })
                                 .cursor_pointer()
+                                .hover(|style| style.bg(rgb(theme::BG_ELEVATED)))
                                 .on_click(cx.listener(move |this, _event, _window, cx| {
                                     this.begin_select_submodule(i, j, relative_path.clone());
                                     cx.notify();
@@ -257,6 +277,7 @@ impl GitMasterApp {
                                                     log_entries,
                                                     canvas_layout,
                                                 );
+                                                this.refresh_visible_worktree(cx);
                                                 cx.notify();
                                             })
                                             .ok();
@@ -294,6 +315,39 @@ impl GitMasterApp {
                 })
                 .collect();
 
+        let dirty_count = self.repos.iter().filter(|repo| repo.is_dirty).count();
+        let summary = if self.scanning {
+            "Scanning repositories…".to_string()
+        } else if self.repos.is_empty() {
+            "Open a workspace to begin".to_string()
+        } else if dirty_count == 0 {
+            format!("{} repositories · all clean", self.repos.len())
+        } else {
+            format!(
+                "{} repositories · {} changed",
+                self.repos.len(),
+                dirty_count
+            )
+        };
+        let header = div()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.0))
+            .px(px(14.0))
+            .pt(px(16.0))
+            .pb(px(12.0))
+            .bg(rgb(theme::BG_SURFACE))
+            .border_b_1()
+            .border_color(rgb(theme::BORDER))
+            .child(div().text_sm().child("Repositories"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme::TEXT_SUBTLE))
+                    .child(summary),
+            );
+
         let list = div()
             .id("repo-list")
             .flex()
@@ -304,18 +358,9 @@ impl GitMasterApp {
             .h_full()
             .bg(rgb(theme::BG_BASE))
             .border_r_1()
-            .border_color(rgb(theme::BG_OVERLAY))
+            .border_color(rgb(theme::BORDER))
             .overflow_y_scroll()
             .track_scroll(&self.repo_scroll)
-            .children(self.scanning.then(|| {
-                div()
-                    .flex_shrink_0()
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_SUBTLE))
-                    .child("Scanning…")
-            }))
             .children(repo_items);
 
         let handle = self.repo_scroll.clone();
@@ -327,12 +372,12 @@ impl GitMasterApp {
                 let max: f32 = handle.max_offset().height.into();
                 let offset: f32 = handle.offset().y.into();
                 let (thumb_height, thumb_top) = repo_scrollbar_geometry(height, max, offset);
-                window.paint_quad(fill(bounds, rgb(theme::BG_SURFACE)));
+                window.paint_quad(fill(bounds, rgb(theme::BG_BASE)));
                 let thumb = Bounds::new(
                     point(bounds.origin.x + px(2.0), bounds.origin.y + px(thumb_top)),
                     size(px(8.0), px(thumb_height)),
                 );
-                window.paint_quad(fill(thumb, rgb(theme::TEXT_SUBTLE)));
+                window.paint_quad(fill(thumb, rgb(theme::BG_OVERLAY)));
                 window.on_mouse_event({
                     let entity = entity.clone();
                     let handle = handle.clone();
@@ -401,12 +446,20 @@ impl GitMasterApp {
         div()
             .flex()
             .flex_row()
-            .w(px(280.0))
+            .w(px(304.0))
             .flex_shrink_0()
             .h_full()
             .min_h(px(0.0))
             .overflow_hidden()
-            .child(list)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .child(header)
+                    .child(list),
+            )
             .child(scrollbar)
             .into_any_element()
     }
@@ -451,8 +504,8 @@ impl GitMasterApp {
             .w(px(200.0))
             .bg(rgb(theme::BG_SURFACE))
             .border_1()
-            .border_color(rgb(theme::BG_OVERLAY))
-            .rounded(px(4.0))
+            .border_color(rgb(theme::BORDER))
+            .rounded(px(8.0))
             .py(px(4.0))
             .text_sm()
             .text_color(rgb(theme::TEXT_PRIMARY))
@@ -506,36 +559,6 @@ impl GitMasterApp {
         {
             return;
         }
-        let path = expected_path.to_path_buf();
-        self.loading_detail = true;
-        let branches = self
-            .log_visible_branches
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        self.detail_task = Some(cx.spawn(async move |entity, cx| {
-            let expected = path.clone();
-            let (detail, log, layout) = cx
-                .background_executor()
-                .spawn(async move {
-                    (
-                        git_ops::get_repo_detail(&path),
-                        git_ops::get_commit_log(&path, 200),
-                        commit_canvas::load_layout_for_branches(&path, &branches, 200),
-                    )
-                })
-                .await;
-            entity
-                .update(cx, |this, cx| {
-                    if this.repos.get(repo_index).map(|repo| repo.path.as_path())
-                        != Some(expected.as_path())
-                    {
-                        return;
-                    }
-                    this.apply_detail(RepoSelection::Repo(repo_index), detail, None, log, layout);
-                    cx.notify();
-                })
-                .ok();
-        }));
+        self.reload_current_detail(cx);
     }
 }

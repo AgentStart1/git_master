@@ -13,6 +13,8 @@ use crate::ui::theme;
 pub enum DetailTab {
     Info,
     GitLog,
+    GitChange,
+    GitStash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +34,17 @@ pub struct ContextMenu {
 }
 
 pub struct GitMasterApp {
+    pub log_window: Option<WindowHandle<crate::ui::log_viewer::LogsWindow>>,
+    pub log_window_generation: u64,
+    #[cfg(feature = "test-rpc")]
+    pub logs_tree_provider: crate::test_rpc::server::ViewTreeProvider,
+    #[cfg(feature = "test-rpc")]
+    pub test_prompt: crate::test_rpc::prompt::PromptState,
+    pub worktree: Option<(PathBuf, Result<crate::worktree::Snapshot, String>)>,
+    pub worktree_task: Option<Task<()>>,
+    pub worktree_loading: bool,
+    pub worktree_revision: u64,
+    pub navigation_revision: u64,
     pub selected_commit: Option<(PathBuf, String)>,
     pub commit_text: Option<Result<String, String>>,
     pub commit_task: Option<Task<()>>,
@@ -55,13 +68,19 @@ pub struct GitMasterApp {
     pub loading_detail: bool,
     pub context_menu: Option<ContextMenu>,
     pub status_message: Option<String>,
+    pub status_expanded: bool,
+    #[cfg(feature = "test-rpc")]
+    pub status_revision: u64,
     pub busy: bool,
     pub scan_task: Option<Task<()>>,
+    pub directory_prompt_task: Option<Task<()>>,
     pub detail_task: Option<Task<()>>,
     pub remote_action_prompt_task: Option<Task<()>>,
     pub operation_task: Option<Task<()>>,
     #[cfg(feature = "test-rpc")]
     pub test_view_tree_task: Option<Task<()>>,
+    #[cfg(feature = "test-rpc")]
+    pub test_view_revision: u64,
     #[cfg(feature = "test-rpc")]
     pub bounds_registry: crate::test_rpc::tracked::BoundsRegistry,
     #[cfg(feature = "test-rpc")]
@@ -73,6 +92,17 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            log_window: None,
+            log_window_generation: 0,
+            #[cfg(feature = "test-rpc")]
+            logs_tree_provider: Default::default(),
+            #[cfg(feature = "test-rpc")]
+            test_prompt: Default::default(),
+            worktree: None,
+            worktree_task: None,
+            worktree_loading: false,
+            worktree_revision: 0,
+            navigation_revision: 0,
             selected_commit: None,
             commit_text: None,
             commit_task: None,
@@ -96,13 +126,19 @@ impl GitMasterApp {
             loading_detail: false,
             context_menu: None,
             status_message: None,
+            status_expanded: false,
+            #[cfg(feature = "test-rpc")]
+            status_revision: 0,
             busy: false,
             scan_task: None,
+            directory_prompt_task: None,
             detail_task: None,
             remote_action_prompt_task: None,
             operation_task: None,
             #[cfg(feature = "test-rpc")]
             test_view_tree_task: None,
+            #[cfg(feature = "test-rpc")]
+            test_view_revision: 0,
             #[cfg(feature = "test-rpc")]
             bounds_registry: Default::default(),
             #[cfg(feature = "test-rpc")]
@@ -116,6 +152,8 @@ impl GitMasterApp {
     /// The actual `scan_repos` work happens off-thread; results land via
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
+        self.navigation_revision += 1;
+        self.invalidate_worktree();
         self.close_commit_details();
         self.parent_dir = Some(path);
         self.repos.clear();
@@ -148,6 +186,8 @@ impl GitMasterApp {
     /// Mark a repo as selected and enter the loading state. The detail and
     /// commit-log work happens off-thread; results land via [`apply_detail`].
     pub fn begin_select(&mut self, index: usize) {
+        self.navigation_revision += 1;
+        self.invalidate_worktree();
         self.close_commit_details();
         self.detail_task = None;
         self.selected = Some(RepoSelection::Repo(index));
@@ -167,6 +207,8 @@ impl GitMasterApp {
         submodule_index: usize,
         relative_path: PathBuf,
     ) {
+        self.navigation_revision += 1;
+        self.invalidate_worktree();
         self.close_commit_details();
         self.detail_task = None;
         self.selected = Some(RepoSelection::Submodule {
@@ -218,6 +260,17 @@ impl GitMasterApp {
         self.active_tab = tab;
     }
 
+    pub fn invalidate_worktree(&mut self) {
+        self.worktree_revision += 1;
+        self.worktree_task = None;
+        self.worktree_loading = false;
+        self.worktree = None;
+    }
+
+    pub fn owns_worktree_request(&self, revision: u64) -> bool {
+        self.worktree_revision == revision
+    }
+
     pub fn set_log_view_mode(&mut self, mode: LogViewMode) {
         self.log_view_mode = mode;
         self.commit_canvas_interaction = None;
@@ -241,7 +294,12 @@ impl GitMasterApp {
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
+        #[cfg(feature = "test-rpc")]
+        {
+            self.status_revision += 1;
+        }
         self.status_message = Some(msg.into());
+        self.status_expanded = false;
     }
 
     #[cfg(feature = "test-rpc")]
@@ -286,6 +344,10 @@ impl GitMasterApp {
                 .iter()
                 .position(|submodule| submodule.relative_path == *relative_path)
         }) else {
+            self.navigation_revision += 1;
+            self.invalidate_worktree();
+            self.close_commit_details();
+            self.detail_task = None;
             self.selected = None;
             self.detail = None;
             self.submodule_detail = None;
@@ -384,6 +446,8 @@ impl GitMasterApp {
                 match tab.as_str() {
                     "info" => self.set_tab(DetailTab::Info),
                     "log" => self.set_tab(DetailTab::GitLog),
+                    "change" => self.set_tab(DetailTab::GitChange),
+                    "stash" => self.set_tab(DetailTab::GitStash),
                     _ => {}
                 }
                 None
@@ -412,13 +476,13 @@ impl GitMasterApp {
 
     #[cfg(feature = "test-rpc")]
     pub fn schedule_test_view_tree_publish(&mut self, cx: &mut Context<'_, Self>) {
+        self.test_view_revision += 1;
+        let revision = self.test_view_revision;
         let snapshot = self.test_view_tree_snapshot();
         let provider = self.tree_provider.clone();
         self.test_view_tree_task = Some(cx.background_executor().spawn(async move {
             let tree = snapshot.build();
-            if let Ok(mut guard) = provider.lock() {
-                *guard = Some(tree);
-            }
+            crate::test_rpc::server::publish_tree(&provider, revision, tree);
         }));
     }
 }
@@ -469,9 +533,7 @@ impl Render for GitMasterApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
         #[cfg(feature = "test-rpc")]
         {
-            cx.on_next_frame(window, |this, _window, cx| {
-                this.schedule_test_view_tree_publish(cx);
-            });
+            self.bounds_registry.borrow_mut().clear();
         }
 
         let top_bar = self.render_top_bar(window, cx);
@@ -499,6 +561,18 @@ impl Render for GitMasterApp {
             .child(main_content)
             .children(context_menu.map(|m| self.track("context-menu", m)));
 
+        #[cfg(feature = "test-rpc")]
+        {
+            let entity = cx.entity();
+            // Publish after this frame's prepaint has recorded all control bounds.
+            // An idle X11 window may never deliver a subsequent frame callback.
+            crate::test_rpc::tracked::tracked("root", root, &self.bounds_registry)
+                .after_paint(move |cx| {
+                    entity.update(cx, |this, cx| this.schedule_test_view_tree_publish(cx));
+                })
+                .into_any_element()
+        }
+        #[cfg(not(feature = "test-rpc"))]
         self.track("root", root)
     }
 }
@@ -618,5 +692,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(request.graph_path, Some(PathBuf::from("/repos/repo/lib")));
+    }
+    #[::core::prelude::v1::test]
+    fn navigation_invalidates_read_ownership_even_after_returning_to_same_repo() {
+        let mut app = GitMasterApp::new();
+        app.begin_select(0);
+        let original = app.worktree_revision;
+        let navigation = app.navigation_revision;
+        app.worktree_loading = true;
+        app.begin_select(1);
+        assert!(!app.worktree_loading);
+        app.begin_select(0);
+        assert!(!app.owns_worktree_request(original));
+        assert!(app.navigation_revision > navigation);
+        let selected = app.worktree_revision;
+        app.begin_scan(PathBuf::from("other-workspace"));
+        assert!(!app.owns_worktree_request(selected));
+        app.begin_select_submodule(0, 0, PathBuf::from("module"));
+        let read = app.worktree_revision;
+        app.invalidate_worktree();
+        assert!(!app.owns_worktree_request(read));
+        app.repos = vec![repo(
+            "repo",
+            "/repo",
+            vec![submodule("module", "/repo/module", "module")],
+        )];
+        app.begin_select_submodule(0, 0, PathBuf::from("module"));
+        let removed = app.worktree_revision;
+        app.worktree_loading = true;
+        app.apply_repo_refresh(0, Path::new("/repo"), Some(repo("repo", "/repo", vec![])));
+        assert!(app.selected.is_none());
+        assert!(!app.worktree_loading);
+        assert!(!app.owns_worktree_request(removed));
     }
 }

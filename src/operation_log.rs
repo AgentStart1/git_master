@@ -10,10 +10,19 @@ pub fn log_path() -> PathBuf {
         .or_else(|| std::env::var_os("XDG_STATE_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("GitMaster").join("logs").join(format!(
-        "operations-{}.log",
-        chrono::Local::now().format("%Y-%m-%d")
-    ))
+    base.join("GitMaster")
+        .join("logs")
+        .join(format!("operations-{}.log", log_date()))
+}
+
+fn log_date() -> chrono::NaiveDate {
+    #[cfg(feature = "test-rpc")]
+    if let Some(path) = std::env::var_os("GIT_MASTER_TEST_LOG_DATE") {
+        let value = std::fs::read_to_string(path).expect("test log date file");
+        return chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+            .expect("test log date YYYY-MM-DD");
+    }
+    chrono::Local::now().date_naive()
 }
 
 pub fn append(message: &str) -> std::io::Result<()> {

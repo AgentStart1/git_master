@@ -23,36 +23,42 @@ impl GitMasterApp {
             .py(px(7.0))
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
-            .border_color(rgb(theme::BG_OVERLAY))
+            .border_color(rgb(theme::BORDER))
             .child(
-                div()
-                    .id("log-view-list")
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(list_bg)
-                    .cursor_pointer()
-                    .text_xs()
-                    .child("List")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_log_view_mode(LogViewMode::List);
-                        cx.notify();
-                    })),
+                self.track(
+                    "log-view-list",
+                    div()
+                        .id("log-view-list")
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .bg(list_bg)
+                        .cursor_pointer()
+                        .text_xs()
+                        .child("List")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_log_view_mode(LogViewMode::List);
+                            cx.notify();
+                        })),
+                ),
             )
             .child(
-                div()
-                    .id("log-view-canvas")
-                    .px(px(10.0))
-                    .py(px(4.0))
-                    .rounded(px(4.0))
-                    .bg(canvas_bg)
-                    .cursor_pointer()
-                    .text_xs()
-                    .child("Canvas")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_log_view_mode(LogViewMode::Canvas);
-                        cx.notify();
-                    })),
+                self.track(
+                    "log-view-canvas",
+                    div()
+                        .id("log-view-canvas")
+                        .px(px(10.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .bg(canvas_bg)
+                        .cursor_pointer()
+                        .text_xs()
+                        .child("Canvas")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_log_view_mode(LogViewMode::Canvas);
+                            cx.notify();
+                        })),
+                ),
             );
 
         let remote_controls: Vec<AnyElement> = if let Some(detail) = self.detail.as_ref() {
@@ -69,7 +75,7 @@ impl GitMasterApp {
                         .id(ElementId::Name(fetch_id.clone().into()))
                         .px(px(8.0))
                         .py(px(4.0))
-                        .rounded(px(4.0))
+                        .rounded(px(6.0))
                         .bg(rgb(theme::ACCENT))
                         .text_xs()
                         .text_color(rgb(theme::BG_BASE))
@@ -119,7 +125,7 @@ impl GitMasterApp {
                         .id(ElementId::Name(reset_id.clone().into()))
                         .px(px(8.0))
                         .py(px(4.0))
-                        .rounded(px(4.0))
+                        .rounded(px(6.0))
                         .bg(rgb(theme::RED))
                         .text_xs()
                         .text_color(rgb(theme::BG_BASE))
@@ -139,8 +145,10 @@ impl GitMasterApp {
                         .gap(px(6.0))
                         .px(px(8.0))
                         .py(px(5.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(theme::BG_OVERLAY))
+                        .rounded(px(7.0))
+                        .bg(rgb(theme::BG_ELEVATED))
+                        .border_1()
+                        .border_color(rgb(theme::BORDER))
                         .child(div().text_xs().child(remote.name.clone()))
                         .child(self.track(&fetch_id, fetch))
                         .child(self.track(&pull_id, pull))
@@ -167,13 +175,13 @@ impl GitMasterApp {
                     let background = if is_visible {
                         rgb(theme::ACCENT)
                     } else {
-                        rgb(theme::BG_OVERLAY)
+                        rgb(theme::BG_ELEVATED)
                     };
                     let chip = div()
                         .id(ElementId::Name(format!("log-branch-{branch}").into()))
                         .px(px(8.0))
                         .py(px(4.0))
-                        .rounded(px(4.0))
+                        .rounded(px(6.0))
                         .bg(background)
                         .text_xs()
                         .text_color(if is_visible {
@@ -201,36 +209,46 @@ impl GitMasterApp {
                         .flex()
                         .items_center()
                         .gap(px(2.0))
-                        .child(chip)
+                        .child(self.track(&format!("log-branch-{branch}"), chip))
                         .children((branch != &detail.current_branch).then(|| {
-                            div()
-                                .id(ElementId::Name(format!("log-checkout-{branch}").into()))
-                                .text_xs()
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .cursor_pointer()
-                                .child("Switch")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.run_log_action(
-                                        super::log_actions::LogAction::Checkout(
-                                            checkout_branch.clone(),
-                                        ),
-                                        cx,
-                                    )
-                                }))
+                            self.track(
+                                &format!("log-checkout-{branch}"),
+                                div()
+                                    .id(ElementId::Name(format!("log-checkout-{branch}").into()))
+                                    .text_xs()
+                                    .px(px(6.0))
+                                    .py(px(4.0))
+                                    .cursor_pointer()
+                                    .child("Switch")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.run_log_action(
+                                            super::log_actions::LogAction::Checkout(
+                                                checkout_branch.clone(),
+                                            ),
+                                            cx,
+                                        )
+                                    })),
+                            )
                         }))
                         .children((branch != &detail.current_branch).then(|| {
-                            div()
-                                .id(ElementId::Name(format!("log-delete-{branch}").into()))
-                                .text_xs()
-                                .text_color(rgb(theme::RED))
-                                .px(px(6.0))
-                                .py(px(4.0))
-                                .cursor_pointer()
-                                .child("Delete")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.confirm_delete_branch(delete_branch.clone(), window, cx)
-                                }))
+                            self.track(
+                                &format!("log-delete-{branch}"),
+                                div()
+                                    .id(ElementId::Name(format!("log-delete-{branch}").into()))
+                                    .text_xs()
+                                    .text_color(rgb(theme::RED))
+                                    .px(px(6.0))
+                                    .py(px(4.0))
+                                    .cursor_pointer()
+                                    .child("Delete")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_delete_branch(
+                                            delete_branch.clone(),
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            )
                         }))
                         .into_any_element()
                 })
@@ -244,7 +262,7 @@ impl GitMasterApp {
             .flex_col()
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
-            .border_color(rgb(theme::BG_OVERLAY))
+            .border_color(rgb(theme::BORDER))
             .children((!branch_controls.is_empty()).then(|| {
                 div()
                     .id("log-branches-scroll")

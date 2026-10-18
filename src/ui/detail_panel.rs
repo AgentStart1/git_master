@@ -11,14 +11,36 @@ impl GitMasterApp {
         _window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) -> Option<AnyElement> {
-        self.selected.as_ref()?;
+        if self.selected.is_none() {
+            return Some(self.render_empty_detail());
+        }
 
         let body = if self.loading_detail {
             div()
-                .p(px(16.0))
-                .text_sm()
-                .text_color(rgb(theme::TEXT_SUBTLE))
-                .child("Loading…")
+                .flex()
+                .flex_col()
+                .flex_grow()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .size(px(36.0))
+                        .rounded(px(10.0))
+                        .bg(rgb(theme::ACCENT_SOFT))
+                        .text_color(rgb(theme::ACCENT))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child("…"),
+                )
+                .child(div().text_sm().child("Loading repository"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(theme::TEXT_SUBTLE))
+                        .child("Reading status and commit history"),
+                )
                 .into_any_element()
         } else if let Some(submodule) = self.submodule_detail.as_ref()
             && !submodule.is_initialized
@@ -28,6 +50,8 @@ impl GitMasterApp {
             match self.active_tab {
                 DetailTab::Info => self.render_info_tab(detail).into_any_element(),
                 DetailTab::GitLog => self.render_log_tab(cx),
+                DetailTab::GitChange => self.render_worktree_tab(false, cx),
+                DetailTab::GitStash => self.render_worktree_tab(true, cx),
             }
         } else {
             div()
@@ -42,7 +66,9 @@ impl GitMasterApp {
             div()
                 .flex()
                 .flex_col()
-                .flex_grow()
+                .flex_1()
+                .min_w(px(0.0))
+                .overflow_hidden()
                 .bg(rgb(theme::BG_BASE))
                 .child(self.render_tabs(cx))
                 .child(body)
@@ -50,52 +76,79 @@ impl GitMasterApp {
         )
     }
 
+    fn render_empty_detail(&self) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_grow()
+            .items_center()
+            .justify_center()
+            .gap(px(10.0))
+            .bg(rgb(theme::BG_BASE))
+            .child(
+                div()
+                    .size(px(54.0))
+                    .rounded(px(15.0))
+                    .bg(rgb(theme::ACCENT_SOFT))
+                    .text_color(rgb(theme::ACCENT))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_lg()
+                    .child("⌘"),
+            )
+            .child(div().text_lg().child("Choose a repository"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(theme::TEXT_SUBTLE))
+                    .child("Select one from the sidebar to inspect status and history."),
+            )
+            .into_any_element()
+    }
+
     fn render_tabs(&self, cx: &mut Context<'_, Self>) -> AnyElement {
-        let info_bg = if self.active_tab == DetailTab::Info {
-            rgb(theme::BG_OVERLAY)
-        } else {
-            rgb(theme::BG_SURFACE)
-        };
-        let log_bg = if self.active_tab == DetailTab::GitLog {
-            rgb(theme::BG_OVERLAY)
-        } else {
-            rgb(theme::BG_SURFACE)
-        };
-
-        let tab_info = div()
-            .id("tab-info")
-            .px(px(16.0))
-            .py(px(8.0))
-            .cursor_pointer()
-            .bg(info_bg)
-            .text_sm()
-            .child("Info")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.set_tab(DetailTab::Info);
-                cx.notify();
-            }));
-
-        let tab_log = div()
-            .id("tab-log")
-            .px(px(16.0))
-            .py(px(8.0))
-            .cursor_pointer()
-            .bg(log_bg)
-            .text_sm()
-            .child("Git Log")
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.set_tab(DetailTab::GitLog);
-                cx.notify();
-            }));
+        let tabs = [
+            (DetailTab::Info, "tab-info", "Info"),
+            (DetailTab::GitLog, "tab-log", "Git Log"),
+            (DetailTab::GitChange, "tab-change", "Git Change"),
+            (DetailTab::GitStash, "tab-stash", "Git Stash"),
+        ];
 
         div()
             .flex()
             .flex_row()
             .bg(rgb(theme::BG_SURFACE))
             .border_b_1()
-            .border_color(rgb(theme::BG_OVERLAY))
-            .child(self.track("tab-info", tab_info))
-            .child(self.track("tab-log", tab_log))
+            .border_color(rgb(theme::BORDER))
+            .children(tabs.into_iter().map(|(tab, id, label)| {
+                let element = div()
+                    .id(id)
+                    .px(px(16.0))
+                    .py(px(11.0))
+                    .cursor_pointer()
+                    .border_b_2()
+                    .border_color(rgb(if self.active_tab == tab {
+                        theme::ACCENT
+                    } else {
+                        theme::BG_SURFACE
+                    }))
+                    .text_color(rgb(if self.active_tab == tab {
+                        theme::TEXT_PRIMARY
+                    } else {
+                        theme::TEXT_SUBTLE
+                    }))
+                    .text_sm()
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_tab(tab);
+                        if matches!(tab, DetailTab::GitChange | DetailTab::GitStash) {
+                            this.run_worktree(crate::worktree::Action::Refresh, cx);
+                        }
+                        cx.notify();
+                    }));
+                self.track(id, element)
+            }))
             .into_any_element()
     }
 
@@ -118,10 +171,17 @@ impl GitMasterApp {
                         .flex()
                         .flex_col()
                         .gap(px(6.0))
-                        .p(px(10.0))
-                        .bg(rgb(theme::BG_SURFACE))
-                        .rounded(px(4.0))
-                        .child(div().text_sm().child(remote.name.clone()))
+                        .p(px(12.0))
+                        .bg(rgb(theme::BG_ELEVATED))
+                        .border_1()
+                        .border_color(rgb(theme::BORDER))
+                        .rounded(px(8.0))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(theme::ACCENT))
+                                .child(remote.name.clone()),
+                        )
                         .child(
                             div()
                                 .text_xs()
@@ -133,41 +193,106 @@ impl GitMasterApp {
                 .collect()
         };
 
+        let status_items = [
+            ("New", detail.file_status.new_files, theme::GREEN),
+            ("Modified", detail.file_status.modified, theme::YELLOW),
+            ("Deleted", detail.file_status.deleted, theme::RED),
+            ("Renamed", detail.file_status.renamed, theme::ACCENT),
+            ("Conflicts", detail.file_status.conflicted, theme::RED),
+        ];
+
         div()
             .id("repo-info-scroll")
             .flex()
             .flex_col()
             .flex_grow()
-            .p(px(16.0))
-            .gap(px(12.0))
+            .p(px(20.0))
+            .gap(px(16.0))
             .overflow_y_scroll()
             .scrollbar_width(px(10.0))
-            .child(info_row("Path", &detail.path))
-            .child(info_row("Branch", &detail.current_branch))
-            .child(info_row(
-                "Remotes",
-                &format!("{} configured", detail.remotes.len()),
-            ))
-            .children(remote_rows)
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
+                    .gap(px(12.0))
+                    .p(px(16.0))
+                    .bg(rgb(theme::BG_SURFACE))
+                    .border_1()
+                    .border_color(rgb(theme::BORDER))
+                    .rounded(px(10.0))
                     .child(
                         div()
-                            .text_sm()
-                            .text_color(rgb(theme::TEXT_SUBTLE))
-                            .child("File Status"),
+                            .text_xs()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .child("REPOSITORY"),
                     )
-                    .child(div().text_sm().child(format!(
-                        "{} new, {} modified, {} deleted, {} renamed, {} conflicted",
-                        detail.file_status.new_files,
-                        detail.file_status.modified,
-                        detail.file_status.deleted,
-                        detail.file_status.renamed,
-                        detail.file_status.conflicted,
-                    ))),
+                    .child(info_row("Current branch", &detail.current_branch))
+                    .child(info_row("Local path", &detail.path)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_sm().child("Working tree"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme::TEXT_SUBTLE))
+                                    .child("Changes by type"),
+                            ),
+                    )
+                    .child(div().flex().flex_row().flex_wrap().gap(px(8.0)).children(
+                        status_items.into_iter().map(|(label, count, color)| {
+                            div()
+                                .min_w(px(104.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .p(px(12.0))
+                                .rounded(px(8.0))
+                                .bg(rgb(theme::BG_SURFACE))
+                                .border_1()
+                                .border_color(rgb(theme::BORDER))
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .text_color(rgb(color))
+                                        .child(count.to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(theme::TEXT_SUBTLE))
+                                        .child(label),
+                                )
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_sm().child("Remotes"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(theme::TEXT_SUBTLE))
+                                    .child(format!("{} configured", detail.remotes.len())),
+                            ),
+                    )
+                    .children(remote_rows),
             )
     }
 
@@ -275,6 +400,7 @@ impl GitMasterApp {
                         Ok(_) => "Submodule initialized; canvas refreshed".into(),
                         Err(error) => format!("Submodule init failed: {error}"),
                     });
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();
@@ -302,7 +428,7 @@ impl GitMasterApp {
     }
 
     pub(super) fn toggle_log_branch(&mut self, branch: String, cx: &mut Context<'_, Self>) {
-        if self.busy {
+        if self.busy || self.loading_detail {
             return;
         }
         if self.log_visible_branches.is_empty()
@@ -511,6 +637,7 @@ impl GitMasterApp {
             format!("Fetching {remote}…")
         });
         cx.notify();
+        let navigation = self.navigation_revision;
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let refresh_path = root_path.clone();
             let detail_path = target_path.clone();
@@ -550,15 +677,20 @@ impl GitMasterApp {
                             path == expected_detail_path && current == selection
                         },
                     ) {
-                        this.apply_detail(
-                            selection,
-                            detail,
-                            submodule_detail,
-                            log_entries,
-                            canvas_layout,
-                        );
+                        if this.navigation_revision != navigation {
+                            this.reload_current_detail(cx);
+                        } else {
+                            this.apply_detail(
+                                selection,
+                                detail,
+                                submodule_detail,
+                                log_entries,
+                                canvas_layout,
+                            );
+                        }
                     }
                     this.busy = false;
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();
@@ -607,56 +739,20 @@ impl GitMasterApp {
                             }
                             this.apply_repo_refresh(repo_index, &refresh_path, refreshed);
                             let selected = this.selected_submodule();
-                            if let Some((repo_index, submodule_index, relative_path)) = selected
+                            if let Some((repo_index, _, relative_path)) = selected
                                 && relative_path == selected_relative_path
-                                && let Some(submodule) = this
+                                && this
                                     .repos
                                     .get(repo_index)
-                                    .and_then(|repo| repo.submodules.get(submodule_index))
+                                    .is_some_and(|repo| repo.path == refresh_path)
                             {
-                                let path = submodule.path.clone();
-                                let submodule_detail = Some(SubmoduleDetail {
-                                    name: submodule.name.clone(),
-                                    path: submodule.path.display().to_string(),
-                                    url: submodule.url.clone(),
-                                    is_initialized: submodule.is_initialized,
-                                });
-                                let selection = RepoSelection::Submodule {
-                                    repo_index,
-                                    submodule_index,
-                                    relative_path,
-                                };
-                                this.loading_detail = true;
-                                cx.notify();
-                                this.detail_task = Some(cx.spawn(async move |entity, cx| {
-                                    let (detail, log_entries, canvas_layout) = cx
-                                        .background_executor()
-                                        .spawn(async move {
-                                            (
-                                                git_ops::get_repo_detail(&path),
-                                                git_ops::get_commit_log(&path, 200),
-                                                commit_canvas::load_layout_for_path(&path, 200),
-                                            )
-                                        })
-                                        .await;
-                                    entity
-                                        .update(cx, |this, cx| {
-                                            this.apply_detail(
-                                                selection,
-                                                detail,
-                                                submodule_detail,
-                                                log_entries,
-                                                canvas_layout,
-                                            );
-                                            cx.notify();
-                                        })
-                                        .ok();
-                                }));
+                                this.reload_current_detail(cx);
                             }
                         }
                         Err(e) => this.set_status(format!("Submodule init failed: {e}")),
                     }
                     this.busy = false;
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();

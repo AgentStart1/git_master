@@ -697,10 +697,9 @@ impl GitMasterApp {
                     .into_any_element()
             };
 
-            div()
-                .id(ElementId::Name(
-                    format!("commit-node-{}-{}", node.id.lane_id, node.id.commit_id).into(),
-                ))
+            let id = format!("commit-node-{}-{}", node.id.lane_id, node.id.commit_id);
+            let element = div()
+                .id(ElementId::Name(id.clone().into()))
                 .absolute()
                 .left(px(left))
                 .top(px(top))
@@ -733,10 +732,11 @@ impl GitMasterApp {
                         });
                         cx.stop_propagation();
                     }),
-                )
+                );
+            self.track(&id, element)
         });
 
-        div()
+        let canvas = div()
             .id("commit-canvas")
             .relative()
             .flex()
@@ -804,7 +804,8 @@ impl GitMasterApp {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .into_any_element()
+            .into_any_element();
+        self.track("commit-canvas", canvas)
     }
 }
 

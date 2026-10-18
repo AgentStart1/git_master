@@ -83,31 +83,26 @@ impl GitMasterApp {
         else {
             return;
         };
+        let visible_before = self.log_visible_branches.clone();
+        let mut visible_after = visible_before.clone();
         if let LogAction::Checkout(branch) = &action {
-            if self.log_visible_branches.is_empty() {
-                self.log_visible_branches = self
+            if visible_after.is_empty() {
+                visible_after = self
                     .detail
                     .as_ref()
                     .map(Self::default_log_visible_branches)
                     .unwrap_or_default();
             }
-            self.log_visible_branches.insert(branch.clone());
+            visible_after.insert(branch.clone());
         }
-        let deleted_branch = match &action {
-            LogAction::Delete(branch) => Some(branch.clone()),
-            _ => None,
-        };
-        let mut branches = self
-            .log_visible_branches
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        if let Some(branch) = deleted_branch.as_ref() {
-            branches.retain(|candidate| candidate != branch);
-            if branches.is_empty() {
-                branches.push(expected_branch.clone());
+        if let LogAction::Delete(branch) = &action {
+            visible_after.remove(branch);
+            if visible_after.is_empty() {
+                visible_after.insert(expected_branch.clone());
             }
         }
+        let branches = visible_after.iter().cloned().collect::<Vec<_>>();
+        let failed_branches = visible_before.into_iter().collect::<Vec<_>>();
         self.busy = true;
         self.detail_task = None;
         self.close_context_menu();
@@ -120,6 +115,7 @@ impl GitMasterApp {
             LogAction::Push { remote } => format!("Pushing {expected_branch} to {remote}…"),
         });
         cx.notify();
+        let navigation = self.navigation_revision;
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let expected_target = target.clone();
             let expected_root = root.clone();
@@ -145,11 +141,22 @@ impl GitMasterApp {
                             }
                         }
                     };
+                    // Publish a layout for the actual outcome. A failed mutation
+                    // must not leave the success-only branch filter behind.
+                    let layout = commit_canvas::load_layout_for_branches(
+                        &target,
+                        if result.is_ok() {
+                            &branches
+                        } else {
+                            &failed_branches
+                        },
+                        200,
+                    );
                     (
                         result,
                         git_ops::build_repo_info(&root),
                         git_ops::get_repo_detail(&target),
-                        commit_canvas::load_layout_for_branches(&target, &branches, 200),
+                        layout,
                     )
                 })
                 .await;
@@ -161,20 +168,22 @@ impl GitMasterApp {
                         Ok(_) => "Branch operation complete".into(),
                         Err(error) => format!("Branch operation failed: {error}"),
                     });
-                    if action_succeeded && let Some(branch) = deleted_branch {
-                        this.log_visible_branches.remove(&branch);
-                        if this.log_visible_branches.is_empty() {
-                            this.log_visible_branches.insert(expected_branch);
-                        }
-                    }
                     this.apply_repo_refresh(index, &expected_root, refreshed);
                     if this.selected_remote_action_target().is_some_and(
                         |(_, _, path, selected, _)| {
                             path == expected_target && selected == selection
                         },
                     ) {
-                        this.apply_detail(selection, detail, submodule, Vec::new(), layout);
+                        if this.navigation_revision != navigation {
+                            this.reload_current_detail(cx);
+                        } else {
+                            if action_succeeded {
+                                this.log_visible_branches = visible_after;
+                            }
+                            this.apply_detail(selection, detail, submodule, Vec::new(), layout);
+                        }
                     }
+                    this.refresh_visible_worktree(cx);
                     cx.notify();
                 })
                 .ok();

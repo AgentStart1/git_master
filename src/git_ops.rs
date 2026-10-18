@@ -33,6 +33,8 @@ pub fn scan_repos(parent_dir: &Path) -> Vec<RepoInfo> {
         }
     }
     repos.sort_by_cached_key(|r| r.name.to_lowercase());
+    #[cfg(feature = "test-rpc")]
+    crate::test_rpc::worker_gate::wait("GIT_MASTER_TEST_SCAN_GATE");
     repos
 }
 

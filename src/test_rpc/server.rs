@@ -9,6 +9,47 @@ use super::view_tree::ViewNode;
 
 pub type ViewTreeProvider = Arc<Mutex<Option<ViewNode>>>;
 
+pub fn publish_tree(provider: &ViewTreeProvider, revision: u64, tree: ViewNode) {
+    if let Ok(mut current) = provider.lock() {
+        let previous = current
+            .as_ref()
+            .and_then(|node| node.state.as_ref())
+            .and_then(|state| state.get("view_revision"))
+            .and_then(Value::as_u64);
+        // Cancellation cannot interrupt a snapshot build already running on a
+        // worker. Compare under the publication lock so an older build cannot win.
+        if previous.is_none_or(|previous| revision > previous) {
+            *current = Some(tree);
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::app_state::GitMasterApp;
+
+    #[test]
+    fn late_and_duplicate_snapshots_cannot_replace_newer_completion() {
+        let provider = ViewTreeProvider::default();
+        let mut app = GitMasterApp::new();
+        app.test_view_revision = 2;
+        app.set_status("retry completed");
+        publish_tree(&provider, 2, app.test_view_tree_snapshot().build());
+        app.test_view_revision = 1;
+        app.busy = true;
+        app.set_status("older failure");
+        publish_tree(&provider, 1, app.test_view_tree_snapshot().build());
+        app.test_view_revision = 2;
+        publish_tree(&provider, 2, app.test_view_tree_snapshot().build());
+        let current = provider.lock().unwrap();
+        let state = current.as_ref().unwrap().state.as_ref().unwrap();
+        assert_eq!(state["view_revision"], 2);
+        assert_eq!(state["busy"], false);
+        assert_eq!(state["status_revision"], 1);
+    }
+}
+
 #[derive(Debug)]
 pub enum TestCommand {
     SelectRepo(usize),
@@ -23,7 +64,11 @@ pub enum TestCommand {
 
 pub type CommandQueue = Arc<Mutex<Vec<TestCommand>>>;
 
-pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
+pub fn start(
+    tree_provider: ViewTreeProvider,
+    logs_provider: ViewTreeProvider,
+    command_queue: CommandQueue,
+) {
     let port: u16 = std::env::var("GIT_MASTER_RPC_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -52,6 +97,7 @@ pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
             };
             let provider = tree_provider.clone();
             let cmds = command_queue.clone();
+            let logs = logs_provider.clone();
             thread::spawn(move || {
                 let reader = BufReader::new(match stream.try_clone() {
                     Ok(s) => s,
@@ -66,7 +112,7 @@ pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
                         Err(_) => break,
                     };
 
-                    if let Some(response) = handle_request(&line, &provider, &cmds) {
+                    if let Some(response) = handle_request(&line, &provider, &logs, &cmds) {
                         let mut out = serde_json::to_string(&response).unwrap_or_default();
                         out.push('\n');
                         if writer.write_all(out.as_bytes()).is_err() {
@@ -82,6 +128,7 @@ pub fn start(tree_provider: ViewTreeProvider, command_queue: CommandQueue) {
 fn handle_request(
     raw: &str,
     provider: &ViewTreeProvider,
+    logs: &ViewTreeProvider,
     commands: &CommandQueue,
 ) -> Option<Value> {
     let req: Value = match serde_json::from_str(raw) {
@@ -102,8 +149,13 @@ fn handle_request(
     let params = req.get("params");
 
     match method {
-        Some("get_view_tree") => {
-            let tree = provider.lock().ok().and_then(|g| g.clone());
+        Some("get_view_tree") | Some("get_logs_view_tree") => {
+            let selected = if method == Some("get_logs_view_tree") {
+                logs
+            } else {
+                provider
+            };
+            let tree = selected.lock().ok().and_then(|g| g.clone());
             Some(json!({
                 "jsonrpc": "2.0",
                 "result": tree,

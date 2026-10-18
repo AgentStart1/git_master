@@ -2,28 +2,47 @@ mod app_state;
 mod batch_ops;
 mod commit_details;
 mod desktop_actions;
+mod diff_model;
+mod diff_preview;
 mod git_ops;
+mod log_viewer;
 mod models;
 mod operation_log;
 mod repo_actions;
 #[cfg(feature = "test-rpc")]
 mod test_rpc;
 mod ui;
+mod worktree;
 
 use app_state::GitMasterApp;
 use gpui::*;
 
 fn main() {
+    #[cfg(feature = "test-rpc")]
+    if let Some(directory) = std::env::var_os("GIT_MASTER_TEST_CONFIG_DIR") {
+        for level in [
+            git2::ConfigLevel::System,
+            git2::ConfigLevel::Global,
+            git2::ConfigLevel::XDG,
+            git2::ConfigLevel::ProgramData,
+        ] {
+            // libgit2 does not honor Git CLI's GIT_CONFIG_GLOBAL override.
+            // Configure its process-wide paths before starting any UI or worker threads.
+            unsafe { git2::opts::set_search_path(level, std::path::Path::new(&directory)) }
+                .expect("Cannot isolate test Git configuration");
+        }
+    }
     if let Err(error) = operation_log::append("Application started") {
         eprintln!("Cannot initialize operation log: {error}");
     }
     Application::new().run(|cx: &mut App| {
         #[cfg(feature = "test-rpc")]
-        let (tree_provider, command_queue) = {
+        let (tree_provider, logs_provider, command_queue) = {
             let provider = test_rpc::server::ViewTreeProvider::default();
             let cmds = test_rpc::server::CommandQueue::default();
-            test_rpc::server::start(provider.clone(), cmds.clone());
-            (provider, cmds)
+            let logs = test_rpc::server::ViewTreeProvider::default();
+            test_rpc::server::start(provider.clone(), logs.clone(), cmds.clone());
+            (provider, logs, cmds)
         };
 
         #[allow(unused_variables)]
@@ -50,6 +69,7 @@ fn main() {
                         #[cfg(feature = "test-rpc")]
                         {
                             app.tree_provider = tree_provider.clone();
+                            app.logs_tree_provider = logs_provider.clone();
                             app.command_queue = command_queue.clone();
                         }
                         app
@@ -61,29 +81,17 @@ fn main() {
         #[cfg(feature = "test-rpc")]
         {
             if let Ok(entity) = window.entity(cx) {
+                if std::env::var("GIT_MASTER_TEST_PROMPTS").as_deref() == Ok("1") {
+                    let bounds = entity.read(cx).bounds_registry.clone();
+                    let prompts = entity.read(cx).test_prompt.clone();
+                    cx.set_prompt_builder(move |_, message, detail, answers, handle, window, cx| {
+                        test_rpc::prompt::build(message, detail, answers, handle, window, cx, bounds.clone(), prompts.clone())
+                    });
+                }
                 if let Ok(dir) = std::env::var("GIT_MASTER_OPEN_DIR") {
                     let path = std::path::PathBuf::from(&dir);
                     entity.update(cx, |this, cx| {
-                        this.begin_scan(path.clone());
-                        cx.notify();
-                    });
-                    let scan_path = path.clone();
-                    let scan_entity = entity.downgrade();
-                    let scan_task = cx.spawn(async move |cx: &mut gpui::AsyncApp| {
-                        let repos = cx
-                            .background_executor()
-                            .spawn(async move { git_ops::scan_repos(&scan_path) })
-                            .await;
-                        scan_entity
-                            .update(cx, |this, cx| {
-                                this.apply_scan(&path, repos);
-                                this.schedule_test_view_tree_publish(cx);
-                                cx.notify();
-                            })
-                            .ok();
-                    });
-                    entity.update(cx, |this, _cx| {
-                        this.scan_task = Some(scan_task);
+                        this.start_scan(path, cx);
                     });
                 }
 
@@ -108,10 +116,9 @@ fn main() {
 
                         for command in commands {
                             let Ok(request) = entity_watch.update(cx, |this, cx| {
+                                let refresh_worktree = matches!(&command, test_rpc::server::TestCommand::SetTab(tab) if tab == "change" || tab == "stash");
                                 let request = this.prepare_test_command(command);
-                                if request.is_none() {
-                                    this.schedule_test_view_tree_publish(cx);
-                                }
+                                if refresh_worktree { this.run_worktree(worktree::Action::Refresh, cx); }
                                 cx.notify();
                                 request
                             }) else {
@@ -126,7 +133,6 @@ fn main() {
                                 if entity_watch
                                     .update(cx, |this, cx| {
                                         this.apply_test_detail(result);
-                                        this.schedule_test_view_tree_publish(cx);
                                         cx.notify();
                                     })
                                     .is_err()

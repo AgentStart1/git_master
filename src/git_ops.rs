@@ -9,6 +9,10 @@ mod git_action_tests;
 #[path = "reset_tests.rs"]
 mod reset_tests;
 
+#[cfg(test)]
+#[path = "git_history_tests.rs"]
+mod git_history_tests;
+
 use chrono::TimeZone;
 use git2::{BranchType, Oid, Repository, Sort, StatusOptions};
 
@@ -309,17 +313,14 @@ pub fn get_commit_log(repo_path: &Path, limit: usize) -> Vec<LogEntry> {
     read_commit_log(&repo, limit)
 }
 
-pub fn get_commit_graph(repo_info: &RepoInfo, limit: usize) -> Option<CommitGraph> {
-    get_commit_graph_for_branches(repo_info, &[], limit)
-}
-
-pub fn get_commit_graph_for_branches(
+/// `limit` is a per-tip prefix length, including matching remote tips.
+pub fn get_commit_graph_page(
     repo_info: &RepoInfo,
     branches: &[String],
     limit: usize,
-) -> Option<CommitGraph> {
+) -> Option<(CommitGraph, bool)> {
     let repo = Repository::open(&repo_info.path).ok()?;
-    let main_entries = read_commit_log_for_branches(&repo, branches, limit);
+    let (main_entries, mut has_more) = read_commit_history_page(&repo, branches, limit);
     let mut lanes = Vec::with_capacity(repo_info.submodules.len() + 1);
     lanes.push(CommitLane {
         id: "main".to_string(),
@@ -334,10 +335,9 @@ pub fn get_commit_graph_for_branches(
         let (status, entries) = if !submodule.is_initialized {
             (CommitLaneStatus::Uninitialized, Vec::new())
         } else if let Ok(submodule_repo) = Repository::open(&submodule.path) {
-            (
-                CommitLaneStatus::Available,
-                read_commit_log(&submodule_repo, limit),
-            )
+            let (entries, more) = read_commit_history_page(&submodule_repo, &[], limit);
+            has_more |= more;
+            (CommitLaneStatus::Available, entries)
         } else {
             (CommitLaneStatus::Unavailable, Vec::new())
         };
@@ -376,12 +376,15 @@ pub fn get_commit_graph_for_branches(
         }
     }
 
-    Some(CommitGraph {
-        repository_path: repo_info.path.clone(),
-        lanes,
-        submodule_links,
-        head_labels: collect_branch_heads(&repo),
-    })
+    Some((
+        CommitGraph {
+            repository_path: repo_info.path.clone(),
+            lanes,
+            submodule_links,
+            head_labels: collect_branch_heads(&repo),
+        },
+        has_more,
+    ))
 }
 
 fn collect_branch_heads(repo: &Repository) -> std::collections::HashMap<String, Vec<String>> {
@@ -431,11 +434,19 @@ fn read_commit_log_for_branches(
     branches: &[String],
     limit: usize,
 ) -> Vec<LogEntry> {
-    let mut entries = Vec::new();
-    let mut revwalk = match repo.revwalk() {
-        Ok(r) => r,
-        Err(_) => return entries,
-    };
+    read_commit_history_page(repo, branches, limit).0
+}
+
+fn read_commit_history_page(
+    repo: &Repository,
+    branches: &[String],
+    limit: usize,
+) -> (Vec<LogEntry>, bool) {
+    use std::collections::{BinaryHeap, HashMap, HashSet};
+    if limit == 0 {
+        return (Vec::new(), false);
+    }
+    let mut tips = HashSet::new();
     let branch_names = if branches.is_empty() {
         default_history_branches(repo)
     } else {
@@ -445,7 +456,7 @@ fn read_commit_log_for_branches(
         if let Ok(branch) = repo.find_branch(branch_name, BranchType::Local)
             && let Some(oid) = branch.get().target()
         {
-            revwalk.push(oid).ok();
+            tips.insert(oid);
         }
     }
     // Include the matching remote-tracking branches for every selected local
@@ -467,19 +478,64 @@ fn read_commit_log_for_branches(
         if branch_names.iter().any(|branch| branch == remote_leaf)
             && let Some(oid) = remote_branch.0.get().target()
         {
-            revwalk.push(oid).ok();
+            tips.insert(oid);
         }
     }
-    if branches.is_empty() {
-        revwalk.push_head().ok();
+    if branches.is_empty()
+        && let Ok(head) = repo.head()
+        && let Some(oid) = head.target()
+    {
+        tips.insert(oid);
     }
-    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).ok();
-
-    for oid in revwalk.flatten().take(limit) {
-        let commit = match repo.find_commit(oid) {
-            Ok(c) => c,
-            Err(_) => continue,
+    let mut selected = HashMap::new();
+    let mut has_more = false;
+    for tip in tips {
+        let Ok(mut walk) = repo.revwalk() else {
+            continue;
         };
+        if walk.push(tip).is_err() {
+            continue;
+        }
+        walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME).ok();
+        for (index, oid) in walk.flatten().take(limit.saturating_add(1)).enumerate() {
+            if index == limit {
+                has_more = true;
+                break;
+            }
+            if let Ok(commit) = repo.find_commit(oid) {
+                selected.entry(oid).or_insert(commit);
+            }
+        }
+    }
+    // Sort only the bounded union. Walking the full combined history until an
+    // old tip appears can traverse arbitrarily many unselected commits.
+    let mut children = selected
+        .keys()
+        .map(|id| (*id, 0usize))
+        .collect::<HashMap<_, _>>();
+    for commit in selected.values() {
+        for parent in commit.parent_ids() {
+            if let Some(count) = children.get_mut(&parent) {
+                *count += 1;
+            }
+        }
+    }
+    let mut ready = children
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(id, _)| (selected[id].time().seconds(), *id))
+        .collect::<BinaryHeap<_>>();
+    let mut entries = Vec::with_capacity(selected.len());
+    while let Some((_, oid)) = ready.pop() {
+        let commit = &selected[&oid];
+        for parent in commit.parent_ids() {
+            if let Some(count) = children.get_mut(&parent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.push((selected[&parent].time().seconds(), parent));
+                }
+            }
+        }
         let full_hash = commit.id().to_string();
         let hash = full_hash[..7.min(full_hash.len())].to_string();
         let parent_hashes = commit.parent_ids().map(|id| id.to_string()).collect();
@@ -507,7 +563,7 @@ fn read_commit_log_for_branches(
             message,
         });
     }
-    entries
+    (entries, has_more)
 }
 
 fn default_history_branches(repo: &Repository) -> Vec<String> {

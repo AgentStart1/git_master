@@ -302,6 +302,32 @@ impl GitMasterApp {
                     .children(remote_controls)
             }));
 
+        let loading = self.history_host.is_loading();
+        let more = self
+            .commit_canvas_layout
+            .as_ref()
+            .is_some_and(|layout| layout.has_more);
+        let view_controls = view_controls.child(
+            self.track(
+                "log-load-more",
+                div()
+                    .id("log-load-more")
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(rgb(theme::TEXT_SUBTLE))
+                    .child(if loading {
+                        "Loading history…"
+                    } else if more {
+                        "Load 200 more per branch"
+                    } else {
+                        "All history loaded"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.load_more_history(cx))),
+            ),
+        );
         let toolbar = toolbar.child(view_controls);
 
         let body = match self.log_view_mode {

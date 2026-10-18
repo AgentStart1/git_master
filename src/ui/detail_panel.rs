@@ -451,6 +451,7 @@ impl GitMasterApp {
     }
 
     fn reload_log_for_visible_branches(&mut self, cx: &mut Context<'_, Self>) {
+        self.cancel_history_load();
         let Some((selection, path)) =
             self.selected
                 .as_ref()
@@ -477,6 +478,7 @@ impl GitMasterApp {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
+        self.loading_detail = true;
         self.set_status(format!("Loading {} branch history…", branches.len()));
         cx.notify();
         self.detail_task = Some(cx.spawn(async move |entity, cx| {
@@ -503,6 +505,7 @@ impl GitMasterApp {
                         .unwrap_or_default();
                     this.commit_canvas_layout = layout;
                     this.commit_canvas_interaction = None;
+                    this.loading_detail = false;
                     this.set_status("Git Log updated");
                     cx.notify();
                 })

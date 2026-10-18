@@ -155,3 +155,9 @@ Rename preview regressions cover both pure staged renames and renames with stage
 
 
 The rename review expands these cases to four renderer/content combinations. A native Rust fixture compiled once by rustc is detected as difft but returns malformed JSON during rendering; its invocation record proves both nonempty sections actually attempted difft before Git fallback. Section-specific assertions check exact old/new line numbers, then repeat previews after Stage and Unstage, verify index blob identity, restored source paths, unchanged working bytes, and hidden empty sections. The installed-difft Rust case now rejects silent fallback when difft is available. Mutation verification swaps the two rendered sections while keeping the combined text unchanged: the new edited-rename desktop case rejects the wrong staged old line. No production behavior changed in this review.
+
+## Progressive Git history
+
+History limits apply separately to each selected local tip and matching remote tip, and to each submodule history. Each read probes one extra commit to detect exhaustion, merges by OID, and topologically orders only the selected union (child before parent, with time/OID tie breaking). Expansion raises each prefix by 200 and rebuilds on the background executor; it currently rereads the bounded prefixes rather than retaining libgit2 walkers between requests. Shared commits appear once.
+
+The toolkit-independent `HistoryHost` owns request generations and duplicate/cancelled completion handling. The GPUI adapter owns the cancellable task and validates repository, selection, branch filter, navigation revision, and prefix before publishing. Existing node defaults and saved user coordinates remain stable; new rows append below the old layout. Canvas proximity loading pauses after a failed read until an explicit retry. The toolbar exposes the same expansion for List and Canvas, and reports when all histories are exhausted.

@@ -107,6 +107,7 @@ pub struct TestViewTreeSnapshot {
     submodule_detail: Option<SubmoduleDetail>,
     log_entries: Vec<LogEntry>,
     log_view_mode: LogViewMode,
+    history_loading: bool,
     commit_canvas_layout: Option<CommitCanvasLayout>,
     scanning: bool,
     loading_detail: bool,
@@ -140,6 +141,7 @@ impl GitMasterApp {
             submodule_detail: self.submodule_detail.clone(),
             log_entries: self.log_entries.clone(),
             log_view_mode: self.log_view_mode,
+            history_loading: self.history_host.is_loading(),
             commit_canvas_layout: self.commit_canvas_layout.clone(),
             scanning: self.scanning,
             loading_detail: self.loading_detail,
@@ -651,6 +653,23 @@ impl TestViewTreeSnapshot {
                     .with_text("Canvas")
                     .with_interactive(),
             );
+
+        toolbar = toolbar.with_child(
+            ViewNode::new("button")
+                .with_id("log-load-more")
+                .with_text(if self.history_loading {
+                    "Loading history…"
+                } else if self
+                    .commit_canvas_layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.has_more)
+                {
+                    "Load 200 more per branch"
+                } else {
+                    "All history loaded"
+                })
+                .with_interactive(),
+        );
 
         if let Some(detail) = &self.detail {
             toolbar = toolbar.with_child(

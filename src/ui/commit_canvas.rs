@@ -98,6 +98,8 @@ pub struct CommitCanvasLayout {
     pub nodes: Vec<CanvasNode>,
     pub edges: Vec<CanvasEdge>,
     pub list: crate::ui::log_list::LogListLayout,
+    pub history_limit: usize,
+    pub has_more: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,7 +167,12 @@ pub enum CanvasInteraction {
 /// Loads Git data and prepares an immutable, UI-ready layout. Call this only
 /// from a background executor.
 pub fn load_layout(repo_info: &RepoInfo, limit: usize) -> Option<CommitCanvasLayout> {
-    git_ops::get_commit_graph(repo_info, limit).map(|graph| build_layout(&graph))
+    git_ops::get_commit_graph_page(repo_info, &[], limit).map(|(graph, has_more)| {
+        let mut layout = build_layout(&graph);
+        layout.history_limit = limit;
+        layout.has_more = has_more;
+        layout
+    })
 }
 
 /// Discovers a repository and prepares its graph layout. Call this only from
@@ -186,8 +193,12 @@ pub fn load_layout_for_branches(
     limit: usize,
 ) -> Option<CommitCanvasLayout> {
     let repo_info = git_ops::build_repo_info(repo_path)?;
-    git_ops::get_commit_graph_for_branches(&repo_info, branches, limit)
-        .map(|graph| build_layout(&graph))
+    git_ops::get_commit_graph_page(&repo_info, branches, limit).map(|(graph, has_more)| {
+        let mut layout = build_layout(&graph);
+        layout.history_limit = limit;
+        layout.has_more = has_more;
+        layout
+    })
 }
 
 pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
@@ -369,6 +380,8 @@ pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
     }
 
     CommitCanvasLayout {
+        history_limit: 200,
+        has_more: false,
         repository_path: graph.repository_path.clone(),
         lanes,
         nodes,
@@ -473,9 +486,38 @@ impl GitMasterApp {
         let edges = layout.edges.clone();
         let paint_state = state.clone();
 
+        let auto_load = layout.has_more && self.history_host.can_auto_load();
+        let frontier = layout
+            .nodes
+            .iter()
+            .filter(|node| node.kind == CanvasNodeKind::Commit)
+            .map(|node| state.pan.y + (state.position_for(node).y + node.height) * state.zoom)
+            .fold(0.0, f32::max);
+        let entity = cx.entity().downgrade();
+        let expected_path = layout.repository_path.clone();
+        let expected_limit = layout.history_limit;
         let edge_canvas = canvas(
             |_, _, _| {},
-            move |bounds, _, window, _| {
+            move |bounds, _, window, cx| {
+                if auto_load && frontier >= 0.0 && frontier <= f32::from(bounds.size.height) + 256.0
+                {
+                    let entity = entity.clone();
+                    let expected_path = expected_path.clone();
+                    cx.defer(move |cx| {
+                        entity
+                            .update(cx, |this, cx| {
+                                if this.history_host.can_auto_load()
+                                    && this.commit_canvas_layout.as_ref().is_some_and(|layout| {
+                                        layout.repository_path == expected_path
+                                            && layout.history_limit == expected_limit
+                                    })
+                                {
+                                    this.load_more_history(cx);
+                                }
+                            })
+                            .ok();
+                    });
+                }
                 paint_grid(bounds, &paint_state, window);
                 paint_edges(
                     bounds,

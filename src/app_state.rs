@@ -61,6 +61,8 @@ pub struct GitMasterApp {
     pub log_entries: Vec<LogEntry>,
     pub log_view_mode: LogViewMode,
     pub log_visible_branches: BTreeSet<String>,
+    pub history_host: crate::history_host::HistoryHost,
+    pub history_task: Option<Task<()>>,
     pub commit_canvas_layout: Option<CommitCanvasLayout>,
     pub commit_canvas_states: HashMap<PathBuf, CommitCanvasState>,
     pub commit_canvas_interaction: Option<CanvasInteraction>,
@@ -119,6 +121,8 @@ impl GitMasterApp {
             log_entries: Vec::new(),
             log_view_mode: LogViewMode::List,
             log_visible_branches: BTreeSet::new(),
+            history_host: Default::default(),
+            history_task: None,
             commit_canvas_layout: None,
             commit_canvas_states: HashMap::new(),
             commit_canvas_interaction: None,
@@ -152,6 +156,7 @@ impl GitMasterApp {
     /// The actual `scan_repos` work happens off-thread; results land via
     /// [`apply_scan`].
     pub fn begin_scan(&mut self, path: PathBuf) {
+        self.cancel_history_load();
         self.navigation_revision += 1;
         self.invalidate_worktree();
         self.close_commit_details();
@@ -186,6 +191,7 @@ impl GitMasterApp {
     /// Mark a repo as selected and enter the loading state. The detail and
     /// commit-log work happens off-thread; results land via [`apply_detail`].
     pub fn begin_select(&mut self, index: usize) {
+        self.cancel_history_load();
         self.navigation_revision += 1;
         self.invalidate_worktree();
         self.close_commit_details();
@@ -207,6 +213,7 @@ impl GitMasterApp {
         submodule_index: usize,
         relative_path: PathBuf,
     ) {
+        self.cancel_history_load();
         self.navigation_revision += 1;
         self.invalidate_worktree();
         self.close_commit_details();
@@ -239,6 +246,7 @@ impl GitMasterApp {
         if self.selected.as_ref() != Some(&selection) {
             return;
         }
+        self.cancel_history_load();
         self.detail = detail;
         self.submodule_detail = submodule_detail;
         self.log_entries = commit_canvas_layout
@@ -344,6 +352,7 @@ impl GitMasterApp {
                 .iter()
                 .position(|submodule| submodule.relative_path == *relative_path)
         }) else {
+            self.cancel_history_load();
             self.navigation_revision += 1;
             self.invalidate_worktree();
             self.close_commit_details();

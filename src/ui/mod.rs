@@ -18,3 +18,5 @@ pub mod diff_view;
 
 mod log_geometry;
 pub mod log_viewer;
+
+mod history_loading;

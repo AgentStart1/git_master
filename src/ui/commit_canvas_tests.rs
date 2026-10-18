@@ -195,3 +195,59 @@ fn dragging_the_background_pans_the_repository_canvas() {
         CanvasPoint::new(30.0, 11.0)
     );
 }
+
+#[::core::prelude::v1::test]
+fn expanding_history_preserves_existing_nodes_pan_zoom_and_dragged_positions() {
+    let mut graph = CommitGraph {
+        repository_path: PathBuf::from("/repo"),
+        lanes: vec![CommitLane {
+            id: "main".into(),
+            name: "repo".into(),
+            relative_path: None,
+            status: CommitLaneStatus::Available,
+            entries: vec![
+                entry("new-tip", &["new-parent"]),
+                entry("old-tip", &["old-parent"]),
+            ],
+        }],
+        submodule_links: vec![],
+        head_labels: HashMap::from([("old-tip".into(), vec!["older".into()])]),
+    };
+    let previous = build_layout(&graph);
+    let mut state = CommitCanvasState::default();
+    state.ensure_layout(&previous);
+    state.pan = CanvasPoint::new(-70.0, -1200.0);
+    state.zoom = 1.3;
+    let dragged = previous.nodes[0].id.clone();
+    state
+        .node_positions
+        .insert(dragged, CanvasPoint::new(815.0, 456.0));
+    let positions = state.node_positions.clone();
+    graph.lanes[0].entries.insert(1, entry("new-parent", &[]));
+    graph.lanes[0].entries.push(entry("old-parent", &[]));
+    let mut next = build_layout(&graph);
+    super::super::history_loading::stabilize_history_layout(&previous, &mut next);
+    state.ensure_layout(&next);
+    assert_eq!(state.pan, CanvasPoint::new(-70.0, -1200.0));
+    assert_eq!(state.zoom, 1.3);
+    for (id, position) in positions {
+        assert_eq!(state.node_positions[&id], position);
+    }
+    let old_bottom = previous
+        .nodes
+        .iter()
+        .map(|node| node.default_position.y + node.height)
+        .fold(0.0, f32::max);
+    for node in next
+        .nodes
+        .iter()
+        .filter(|node| !previous.nodes.iter().any(|old| old.id == node.id))
+    {
+        assert!(node.default_position.y > old_bottom);
+    }
+    assert!(
+        next.edges
+            .iter()
+            .any(|edge| edge.from.commit_id == "old-tip" && edge.to.commit_id == "old-parent")
+    );
+}

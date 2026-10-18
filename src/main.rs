@@ -5,6 +5,7 @@ mod desktop_actions;
 mod diff_model;
 mod diff_preview;
 mod git_ops;
+mod history_host;
 mod log_viewer;
 mod models;
 mod operation_log;

@@ -1,7 +1,7 @@
 use crate::diff_model::{self, DiffRow, RenderedDiff, RowKind};
 use git2::{Diff, DiffFile, DiffFormat, FileMode, Repository};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -49,27 +49,37 @@ impl DiffRenderer {
         diff: Diff<'_>,
         workdir: bool,
     ) -> Result<RenderedDiff, git2::Error> {
-        if diff.deltas().len() == 0 {
+        self.render_selected(repo, diff, workdir, None)
+    }
+
+    pub fn render_selected(
+        &self,
+        repo: &Repository,
+        diff: Diff<'_>,
+        workdir: bool,
+        path: Option<&Path>,
+    ) -> Result<RenderedDiff, git2::Error> {
+        if !diff.deltas().any(|delta| selected(&delta, path)) {
             return Ok(RenderedDiff {
                 text: "No changes.\n".into(),
                 rows: vec![],
             });
         }
         if let Some(program) = &self.program {
-            if let Ok(mut document) = self.render_difft(program, repo, &diff, workdir) {
+            if let Ok(mut document) = self.render_difft(program, repo, &diff, workdir, path) {
                 document.text.insert_str(0, "Diff renderer: difft\n");
                 return Ok(document);
             }
             let text = format!(
                 "Diff renderer: Git (difft could not render this preview)\n{}",
-                unified(diff)?
+                unified(diff, path)?
             );
             let rows = diff_model::from_unified(
                 text.lines().skip(1).collect::<Vec<_>>().join("\n").as_str(),
             );
             return Ok(RenderedDiff { text, rows });
         }
-        let text = unified(diff)?;
+        let text = unified(diff, path)?;
         let rows = diff_model::from_unified(&text);
         Ok(RenderedDiff { text, rows })
     }
@@ -80,11 +90,12 @@ impl DiffRenderer {
         repo: &Repository,
         diff: &Diff<'_>,
         workdir: bool,
+        path: Option<&Path>,
     ) -> std::io::Result<RenderedDiff> {
         let temp = tempfile::tempdir()?;
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut document = RenderedDiff::default();
-        for delta in diff.deltas() {
+        for delta in diff.deltas().filter(|delta| selected(delta, path)) {
             if document.text.len() >= PREVIEW_LIMIT || document.rows.len() >= diff_model::ROW_LIMIT
             {
                 document
@@ -141,6 +152,17 @@ impl DiffRenderer {
                         i32::from(new.mode())
                     ),
                 ));
+            }
+            if delta.status() == git2::Delta::Renamed
+                && let Some((from, to)) = old.path().zip(new.path())
+            {
+                rows.insert(
+                    0,
+                    DiffRow::label(
+                        RowKind::File,
+                        format!("Renamed: {} → {}", from.display(), to.display()),
+                    ),
+                );
             }
             for row in &rows {
                 let prefix = match row.kind {
@@ -248,13 +270,22 @@ fn capture(command: &mut Command, deadline: Instant, limit: usize) -> std::io::R
     Ok(text)
 }
 
-fn unified(diff: git2::Diff<'_>) -> Result<String, git2::Error> {
+fn selected(delta: &git2::DiffDelta<'_>, path: Option<&Path>) -> bool {
+    path.is_none_or(|path| {
+        delta.old_file().path() == Some(path) || delta.new_file().path() == Some(path)
+    })
+}
+
+fn unified(diff: git2::Diff<'_>, path: Option<&Path>) -> Result<String, git2::Error> {
     if diff.deltas().len() == 0 {
         return Ok("No changes.\n".into());
     }
     let mut text = Vec::new();
     let mut truncated = false;
-    diff.print(DiffFormat::Patch, |_, _, line| {
+    diff.print(DiffFormat::Patch, |delta, _, line| {
+        if !selected(&delta, path) {
+            return true;
+        }
         if truncated || text.len() + line.content().len() + 1 > 512 * 1024 {
             truncated = true;
             return true;

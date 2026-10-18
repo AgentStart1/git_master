@@ -125,3 +125,44 @@ def test_conflicting_stash_restore_keeps_stash_and_local_edits(app_factory, isol
     app.wait(lambda tree: app.idle(tree) and "failed" in status(tree).lower(), "safe restore failure")
     assert git(repo, "rev-parse", "refs/stash").strip() == oid
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "precious local edit\n"
+
+
+@pytest.mark.p1
+@pytest.mark.parametrize("edited", [False, True])
+def test_rename_preview_keeps_old_content_and_worktree_edits(app_factory, isolated_git, edited):
+    root, repo = worktree(app_factory, isolated_git)
+    base = "".join(f"unchanged line {n}\n" for n in range(20))
+    (repo / "tracked.txt").write_text(base, encoding="utf-8")
+    commit_all(repo, "Multiline rename source")
+    git(repo, "mv", "tracked.txt", "renamed[1].txt")
+    staged = base.replace("unchanged line 10", "staged rename edit") if edited else base
+    path = repo / "renamed[1].txt"
+    path.write_text(staged, encoding="utf-8")
+    git(repo, "add", "--", path.name)
+    path.write_text(staged.replace("unchanged line 11", "working rename edit"), encoding="utf-8")
+    (repo / "renamed1.txt").write_text("unrelated sentinel\n", encoding="utf-8")
+    before_index = git(repo, "ls-files", "--stage", "-z")
+    before_status = git(repo, "status", "--porcelain", "-z")
+    before = path.read_bytes()
+    app = app_factory(root)
+    app.select(0, repo)
+    app.tab("change")
+    app.change(repo, path.name, "diff")
+    tree = app.wait(lambda t: app.idle(t) and "working rename edit" in text(find(t, "worktree-diff") or {}), "rename diff completed")
+    preview = find(tree, "worktree-diff")
+    output = text(preview)
+    assert "tracked.txt" in output and path.name in output
+    assert "Staged" in output and "Working tree" in output
+    assert "unrelated sentinel" not in output and "renamed1.txt" not in output
+    rows = list(walk(preview))
+    assert not any(r["node_type"] == "diff-added" and "unchanged line 0" in text(r) for r in rows)
+    if edited:
+        assert any(r["node_type"] == "diff-removed" and "unchanged line 10" in text(r) for r in rows)
+        assert any(r["node_type"] == "diff-added" and "staged rename edit" in text(r) for r in rows)
+    assert any(r["node_type"] == "diff-removed" and "unchanged line 11" in text(r) for r in rows)
+    assert git(repo, "ls-files", "--stage", "-z") == before_index
+    assert git(repo, "status", "--porcelain", "-z") == before_status
+    assert path.read_bytes() == before and not (repo / "tracked.txt").exists()
+    import pyautogui
+    x, y, width, height = app.window_geometry()
+    pyautogui.screenshot(region=(x, y, width, height)).save(app.artifacts / "rename-preview.png")

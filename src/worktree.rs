@@ -133,16 +133,19 @@ fn execute_document(
             Action::Refresh => {}
             Action::Diff(path) => {
                 let tree = head_tree(&repo)?;
+                // Detect across the complete index diff before selecting either side of a rename.
+                let mut staged = repo.diff_tree_to_index(tree.as_ref(), None, None)?;
+                staged.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+                // Worktree entries are separate paths; keep content reads scoped to the selection.
                 let mut opts = DiffOptions::new();
                 opts.pathspec(path)
                     .disable_pathspec_match(true)
                     .include_untracked(true)
                     .recurse_untracked_dirs(true)
                     .show_untracked_content(true);
-                let staged = repo.diff_tree_to_index(tree.as_ref(), None, Some(&mut opts))?;
                 let work = repo.diff_index_to_workdir(None, Some(&mut opts))?;
-                let staged = renderer.render(&repo, staged, false)?;
-                let work = renderer.render(&repo, work, true)?;
+                let staged = renderer.render_selected(&repo, staged, false, Some(path))?;
+                let work = renderer.render_selected(&repo, work, true, Some(path))?;
                 let text = format!("Staged\n{}\nWorking tree\n{}", staged.text, work.text);
                 document.section("Staged", staged);
                 document.section("Working tree", work);
@@ -520,6 +523,75 @@ mod tests {
         );
 
         assert!(preview.contains("Staged\nNo changes."));
+    }
+
+    #[test]
+    fn rename_preview_keeps_both_paths_edits_and_literal_selection() {
+        let f = Fixture::new(true);
+        let base = (0..20)
+            .map(|n| format!("unchanged line {n}\n"))
+            .collect::<String>();
+        std::fs::write(f.0.join("tracked.txt"), &base).unwrap();
+        f.run(Action::Stage("tracked.txt".into()));
+        let repo = Repository::open(&f.0).unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "multiline", &tree, &[&parent])
+            .unwrap();
+        std::fs::rename(f.0.join("tracked.txt"), f.0.join("renamed[1].txt")).unwrap();
+        f.run(Action::Stage("tracked.txt".into()));
+        f.run(Action::Stage("renamed[1].txt".into()));
+        for edited in [false, true] {
+            let staged = if edited {
+                base.replace("unchanged line 10", "staged rename edit")
+            } else {
+                base.clone()
+            };
+            std::fs::write(f.0.join("renamed[1].txt"), &staged).unwrap();
+            f.run(Action::Stage("renamed[1].txt".into()));
+            std::fs::write(
+                f.0.join("renamed[1].txt"),
+                staged.replace("unchanged line 11", "working rename edit"),
+            )
+            .unwrap();
+            std::fs::write(f.0.join("renamed1.txt"), "unrelated sentinel\n").unwrap();
+            for renderer in [
+                DiffRenderer::default(),
+                DiffRenderer::with_program(f.0.join("missing-difft")),
+                DiffRenderer::detect(),
+            ] {
+                for path in ["tracked.txt", "renamed[1].txt"] {
+                    let doc =
+                        execute_document(&f.0, &Action::Diff(path.into()), &renderer).unwrap();
+                    let (index, work) = doc.text.split_once("Working tree\n").unwrap();
+                    assert!(
+                        index.contains("tracked.txt") && index.contains("renamed[1].txt"),
+                        "{}",
+                        doc.text
+                    );
+                    assert!(!doc.text.contains("unrelated sentinel"));
+                    assert!(!doc.text.contains("renamed1.txt"));
+                    assert!(
+                        !doc.rows
+                            .iter()
+                            .any(|r| r.kind == RowKind::Added && r.text == "unchanged line 0")
+                    );
+                    if edited {
+                        assert!(
+                            doc.rows.iter().any(
+                                |r| r.kind == RowKind::Removed && r.text == "unchanged line 10"
+                            )
+                        );
+                        assert!(doc.rows.iter().any(|r| r.kind == RowKind::Added && r.text == "staged rename edit"));
+                    }
+                    if path == "renamed[1].txt" {
+                        assert!(work.contains("working rename edit"));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

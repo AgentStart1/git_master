@@ -66,7 +66,12 @@ jobs:
           sudo apt-get install -y \
             libxcb1-dev libxcb-xkb-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libvulkan-dev libwayland-dev libfontconfig-dev mesa-vulkan-drivers \
-            xvfb xauth xdotool scrot gnome-screenshot python3-tk fonts-noto-cjk
+            xvfb xauth xdotool scrot gnome-screenshot python3-tk
+
+      - name: Inspect Chinese font fallback
+        run: |
+          fc-list ':charset=4e2d' family file
+          fc-match 'monospace:charset=4e2d'
 
       - uses: actions/setup-python@v7
         with:

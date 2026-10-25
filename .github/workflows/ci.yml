@@ -42,6 +42,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Keep the job ID stable: main and PR checks must use the same cache key.
       - uses: Swatinem/rust-cache@v2
 
       - name: Install Linux dependencies
@@ -68,6 +69,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # E2E debug artifacts stay separate from check and release artifacts.
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies

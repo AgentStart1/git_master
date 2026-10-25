@@ -1,4 +1,5 @@
 name: CI
+# Temporary probe: verify a fresh PR restores its base branch's caches.
 
 on:
   push:

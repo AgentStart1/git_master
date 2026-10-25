@@ -1,5 +1,43 @@
 # Development
 
+## CI cache baseline
+
+CI runs three-platform checks, the Linux `test-rpc` build, Rust regressions and
+driver unit tests on relevant `main` pushes and pull requests. The complete
+desktop E2E suite remains mandatory on PRs; main produces the dependency cache
+without repeating that suite. Keep push and pull-request path filters aligned.
+The `check` and `e2e` job IDs are part of the default `Swatinem/rust-cache`
+key: retain them so PRs can restore compatible base-branch caches. The action
+also separates runner OS/architecture, Rust toolchains and Cargo environment;
+check (production plus `test-rpc`), E2E debug (`test-rpc`) and release builds
+remain separate. Release caching is unchanged.
+
+Cache hits reuse dependency artifacts, not the application crate or test
+results: every validation command still runs. Stable toolchain updates and
+dependency changes can cause misses. A cache created by one PR is not a baseline
+for another PR; the successful base-branch run is the producer.
+
+To evaluate the tradeoff, compare a cold producer, a warm producer and a **new**
+PR targeting that producer branch, at the same source revision and toolchain.
+Use an isolated fork/branch rather than deleting useful production caches.
+Record cache restore/save time, each Cargo step, total job duration and cache
+size, separately for each runner/job. GitHub's job and cache APIs expose these:
+
+```sh
+gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs
+gh api repos/OWNER/REPO/actions/caches --paginate
+gh run view RUN_ID --repo OWNER/REPO --log
+```
+
+Confirm the new PR logs restore the producer's cache key, rather than merely
+reporting a hit on a prior PR's cache. Include upload/download overhead in the
+comparison. For each job, divide the added warm `main` job duration by the cold
+minus warm PR duration to estimate the number of fresh PR validations needed
+per relevant `main` push to recover the added runner time. Report runner seconds
+per OS separately; they are not a billing estimate. Initial cache population,
+cache eviction, dependency churn and runner variability add costs. Retain the
+previous behavior for any job whose measured workload does not justify warming.
+
 ## Rust checks
 
 Use a current Rust stable toolchain (edition 2024), Git, and the GPUI platform dependencies described in README.md.

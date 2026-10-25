@@ -104,6 +104,9 @@ jobs:
         run: cargo test --features test-rpc
 
       - name: Run E2E tests
+        # Main validates the build and regressions to seed dependencies; desktop
+        # tests remain mandatory on every PR without adding a second full run.
+        if: github.event_name == 'pull_request'
         run: |
           xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e -v --app-binary target/debug/git_master --junitxml=test-results/e2e.xml
 

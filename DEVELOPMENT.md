@@ -1,5 +1,91 @@
 # Development
 
+## CI cache baseline
+
+CI runs three-platform checks, the Linux `test-rpc` build, Rust regressions and
+driver unit tests on relevant `main` pushes and pull requests. The complete
+desktop E2E suite remains mandatory on PRs; main produces the dependency cache
+without repeating that suite. Keep push and pull-request path filters aligned.
+The `check` and `e2e` job IDs are part of the default `Swatinem/rust-cache`
+key: retain them so PRs can restore compatible base-branch caches. The action
+also separates runner OS/architecture, Rust toolchains and Cargo environment;
+check (production plus `test-rpc`), E2E debug (`test-rpc`) and release builds
+remain separate. Release caching is unchanged.
+
+Cache hits reuse dependency artifacts, not the application crate or test
+results: every validation command still runs. Stable toolchain updates and
+dependency changes can cause misses. A cache created by one PR is not a baseline
+for another PR; the successful base-branch run is the producer.
+
+To evaluate the tradeoff, compare a cold producer, a warm producer and a **new**
+PR targeting that producer branch, at the same source revision and toolchain.
+Use an isolated fork/branch rather than deleting useful production caches.
+Record cache restore/save time, each Cargo step, total job duration and cache
+size, separately for each runner/job. GitHub's job and cache APIs expose these:
+
+```sh
+gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs
+gh api repos/OWNER/REPO/actions/caches --paginate
+gh run view RUN_ID --repo OWNER/REPO --log
+```
+
+Confirm the new PR logs restore the producer's cache key, rather than merely
+reporting a hit on a prior PR's cache. Include upload/download overhead in the
+comparison. For each job, divide the added warm `main` job duration by the cold
+minus warm PR duration to estimate the number of fresh PR validations needed
+per relevant `main` push to recover the added runner time. Report runner seconds
+per OS separately; they are not a billing estimate. Initial cache population,
+cache eviction, dependency churn and runner variability add costs. Retain the
+previous behavior for any job whose measured workload does not justify warming.
+
+### Cache measurements (2026-10-25)
+
+Measured in an isolated fork using a producer branch as the PR base (the same
+[base-branch cache access rule](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache)
+used by `main`). Application source, lockfile and Rust toolchain were unchanged.
+The fork initially had no caches. The cold validation also ran the complete
+desktop suite; the warm producer used the final main behavior described above.
+This is one sample per configuration, not a guarantee for future runners.
+
+- [Cold validation](https://github.com/AgentStart1/git_master/actions/runs/40173406657)
+- [Warm producer](https://github.com/AgentStart1/git_master/actions/runs/40173924876)
+- [Fresh PR validation](https://github.com/AgentStart1/git_master/actions/runs/40173937268)
+
+| Job | Cold job (s) | Fresh warm PR job (s) | Added warm main job (s) | Rust cache (MiB) |
+|---|---:|---:|---:|---:|
+| Linux check | 131 | 38 | 39 | 476.0 |
+| macOS check | 244 | 26 | 35 | 357.3 |
+| Windows check | 290 | 98 | 80 | 365.5 |
+| Linux E2E / build producer | 464 | 353 | 66 | 800.8 |
+| Total runner seconds | 1129 | 515 | 220 | 1999.6 |
+
+Job durations include setup, dependencies and cache transfer/cleanup; queue
+time is excluded. The three check jobs save 503 runner seconds per fresh PR,
+against 154 seconds of added warm-main checks. Their per-job break-even ratios
+are 0.42, 0.16 and 0.42 fresh PR validations per relevant main push, respectively.
+The E2E job saves another 111 seconds against 66 seconds of added main work
+(break-even 0.59). One fresh PR per relevant warm main push therefore saves
+614 - 220 = 394 runner seconds in this sample. Every job passes this steady-state
+threshold, so all four producers are retained. These are cumulative runner
+seconds, not elapsed time or money. The PR's longest job fell from 464 to 353
+seconds. Initial cold population costs more and must be amortized separately:
+the measured cold producer consumed 1129 seconds including a 262-second desktop
+step; excluding that step estimates 867 seconds for the final cold-main behavior,
+but that estimate is not a separately measured run.
+
+The restored Rust cache steps on the fresh PR took 9/9/28 seconds for
+Linux/macOS/Windows; production `cargo check` took 2/8/44 seconds, versus
+82/180/200 seconds cold. All four Rust caches total 2.10 GB (plus 11.2 MB for
+pip). Their keys retain separate `check`/`e2e`, OS/architecture and Rust/Cargo
+hashes. The cache API listed only producer-branch refs, and fresh PR logs
+reported those exact keys restored successfully, proving cross-branch reuse.
+The warm PR's E2E build took 6 seconds versus 139 seconds cold, with a 13-second
+cache restore. The desktop suite itself varied from 262 to 284 seconds and is
+not accelerated by this cache. Both full validations passed 94 E2E cases with
+the existing two Windows-only skips, 53 Rust regressions and six driver tests.
+This validates the mechanism in the fork; upstream `main` must run successfully
+after merge before upstream PRs can benefit.
+
 ## Rust checks
 
 Use a current Rust stable toolchain (edition 2024), Git, and the GPUI platform dependencies described in README.md.

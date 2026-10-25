@@ -1,6 +1,16 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+      - "pytest.ini"
+      - ".gitattributes"
   pull_request:
     branches: [main]
     paths:
@@ -32,6 +42,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Keep the job ID stable: main and PR checks must use the same cache key.
       - uses: Swatinem/rust-cache@v2
 
       - name: Install Linux dependencies
@@ -58,6 +69,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # E2E debug artifacts stay separate from check and release artifacts.
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
@@ -92,6 +104,9 @@ jobs:
         run: cargo test --features test-rpc
 
       - name: Run E2E tests
+        # Main validates the build and regressions to seed dependencies; desktop
+        # tests remain mandatory on every PR without adding a second full run.
+        if: github.event_name == 'pull_request'
         run: |
           xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e -v --app-binary target/debug/git_master --junitxml=test-results/e2e.xml
 

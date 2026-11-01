@@ -206,6 +206,10 @@ impl TestViewTreeSnapshot {
             root = root.with_child(
                 ViewNode::new("dialog")
                     .with_id("test-prompt")
+                    .with_state(serde_json::json!({
+                        "focused_answer": prompt.focused_answer,
+                        "detail_scroll_y": prompt.detail_scroll_y,
+                    }))
                     .with_text(&prompt.message)
                     .with_child(ViewNode::new("text").with_text(&prompt.detail))
                     .with_children(

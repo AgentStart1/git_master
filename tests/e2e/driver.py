@@ -53,7 +53,7 @@ class App:
         config_dir = (artifacts / "git-config").resolve()
         config_dir.mkdir(exist_ok=True)
         self.proc = subprocess.Popen([str(binary)], env={**env, "GIT_MASTER_OPEN_DIR": str(workspace),
-            "GIT_MASTER_RPC_PORT": str(self.port), "GIT_MASTER_TEST_PROMPTS": "1",
+            "GIT_MASTER_RPC_PORT": str(self.port),
             "GIT_MASTER_TEST_CONFIG_DIR": str(config_dir),
             "LOCALAPPDATA": str((artifacts / "state").resolve())},
             stdout=self.output, stderr=subprocess.STDOUT)

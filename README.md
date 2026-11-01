@@ -64,6 +64,8 @@ src/
 
 ## Notes
 
+- Branch deletion, stash deletion, and Reset use application confirmation dialogs. Focus starts on Cancel; Tab/Shift-Tab switch buttons, Enter/Space activate the focused button, and Esc or Alt+F4 cancels. Closing a dialog restores the previous focus while retaining ownership of any keys still held, so their release cannot activate the underlying interface. Long diagnostics scroll inside the dialog with the mouse wheel, arrow keys, Page Up/Down, or Home/End.
+
 - Reset requires a clean working tree and index, including no untracked files or in-progress Git operation. Commit or stash changes first. The check runs before and after Fetch; Reset still replaces local commits with the remote branch and requires confirmation.
 
 - Right-click a project in the sidebar to open its directory or launch a terminal there (PowerShell on Windows, Terminal on macOS, `x-terminal-emulator` on Linux). Branch switching, Pull and Push are available in Git Log.

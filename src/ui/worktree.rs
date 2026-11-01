@@ -174,6 +174,7 @@ impl GitMasterApp {
         };
         let button = div()
             .id(ElementId::Name(id.clone().into()))
+            .when(danger, |button| button.focusable())
             .px(px(if heading { 0.0 } else { 11.0 }))
             .py(px(if heading { 0.0 } else { 6.0 }))
             .rounded(px(7.0))

@@ -7,6 +7,7 @@ mod diff_preview;
 mod git_ops;
 mod history_host;
 mod log_viewer;
+mod modal_input;
 mod models;
 mod operation_log;
 mod repo_actions;
@@ -79,16 +80,26 @@ fn main() {
             )
             .unwrap();
 
+        let entity = window.entity(cx).expect("Main window is available");
+        let modal_input = entity.read(cx).modal_input.clone();
+        #[cfg(feature = "test-rpc")]
+        let observation = {
+            test_rpc::prompt::Observation {
+                bounds: entity.read(cx).bounds_registry.clone(),
+                state: entity.read(cx).test_prompt.clone(),
+                owner: entity.downgrade(),
+            }
+        };
+        cx.set_prompt_builder(move |_, message, detail, answers, handle, window, cx| {
+            ui::confirmation::build(message, detail, answers, handle, window, cx, modal_input.clone(),
+                #[cfg(feature = "test-rpc")]
+                observation.clone(),
+            )
+        });
+
         #[cfg(feature = "test-rpc")]
         {
             if let Ok(entity) = window.entity(cx) {
-                if std::env::var("GIT_MASTER_TEST_PROMPTS").as_deref() == Ok("1") {
-                    let bounds = entity.read(cx).bounds_registry.clone();
-                    let prompts = entity.read(cx).test_prompt.clone();
-                    cx.set_prompt_builder(move |_, message, detail, answers, handle, window, cx| {
-                        test_rpc::prompt::build(message, detail, answers, handle, window, cx, bounds.clone(), prompts.clone())
-                    });
-                }
                 if let Ok(dir) = std::env::var("GIT_MASTER_OPEN_DIR") {
                     let path = std::path::PathBuf::from(&dir);
                     entity.update(cx, |this, cx| {

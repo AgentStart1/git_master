@@ -150,6 +150,11 @@ pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<String, String> {
     run_git(repo_path, ["branch", "--delete", "--", branch])
 }
 
+/// Deletes even unmerged branches. Callers must obtain explicit confirmation.
+pub fn force_delete_branch(repo_path: &Path, branch: &str) -> Result<String, String> {
+    run_git(repo_path, ["branch", "--delete", "--force", "--", branch])
+}
+
 pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
     run_git(repo_path, ["fetch", "--prune", "--", remote])
 }

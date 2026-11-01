@@ -123,6 +123,7 @@ impl GitMasterApp {
                     let remote_name = remote.name.clone();
                     let reset = div()
                         .id(ElementId::Name(reset_id.clone().into()))
+                        .focusable()
                         .px(px(8.0))
                         .py(px(4.0))
                         .rounded(px(6.0))
@@ -235,6 +236,8 @@ impl GitMasterApp {
                                 &format!("log-delete-{branch}"),
                                 div()
                                     .id(ElementId::Name(format!("log-delete-{branch}").into()))
+                                    .focusable()
+                                    .focus(|style| style.bg(rgb(theme::BG_OVERLAY)))
                                     .text_xs()
                                     .text_color(rgb(theme::RED))
                                     .px(px(6.0))

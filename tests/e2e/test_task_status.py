@@ -14,6 +14,32 @@ def screenshot(app, name):
 
 
 @pytest.mark.p1
+def test_task_progress_keeps_content_bounds_when_appearing_and_disappearing(app_factory, isolated_git, gate):
+    root, repo, remote, _ = remote_fixture(isolated_git)
+    (repo / "outgoing.txt").write_text("pending push\n", encoding="utf-8")
+    commit_all(repo, "Stable task layout")
+    outgoing = git(repo, "rev-parse", "HEAD")
+    gate.install(repo, "pre-push")
+    app = app_factory(root)
+    tree = app.wait(lambda t: app.idle(t) and find(t, "main-content").get("bounds"), "idle layout")
+    assert not find(tree, "status-summary")
+    stable_ids = ("top-bar", "main-content", "repo-0")
+    bounds = {node_id: find(tree, node_id)["bounds"] for node_id in stable_ids}
+    app.select(0, repo)
+    app.tab("log")
+    app.click("log-remote-origin-push", await_operation=False)
+    gate.entered()
+    tree = app.wait(lambda t: t["state"]["busy"] and find(t, "status-summary").get("bounds"), "painted progress")
+    assert {node_id: find(tree, node_id)["bounds"] for node_id in stable_ids} == bounds
+    revision = tree["state"]["status_revision"]
+    gate.release()
+    tree = app.wait_completion(revision)
+    assert status(tree) == "Branch operation complete"
+    assert {node_id: find(tree, node_id)["bounds"] for node_id in stable_ids} == bounds
+    assert git(remote, "rev-parse", "main") == outgoing
+
+
+@pytest.mark.p1
 def test_pending_task_and_verbose_failure_keep_content_visible(app_factory, isolated_git, gate):
     root, repo, remote, _ = remote_fixture(isolated_git)
     (repo / "outgoing.txt").write_text("local commit\n", encoding="utf-8")

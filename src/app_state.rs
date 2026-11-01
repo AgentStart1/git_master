@@ -34,6 +34,7 @@ pub struct ContextMenu {
 }
 
 pub struct GitMasterApp {
+    pub modal_input: std::rc::Rc<std::cell::RefCell<crate::modal_input::ModalInputHost>>,
     pub log_window: Option<WindowHandle<crate::ui::log_viewer::LogsWindow>>,
     pub log_window_generation: u64,
     #[cfg(feature = "test-rpc")]
@@ -94,6 +95,7 @@ pub struct GitMasterApp {
 impl GitMasterApp {
     pub fn new() -> Self {
         Self {
+            modal_input: Default::default(),
             log_window: None,
             log_window_generation: 0,
             #[cfg(feature = "test-rpc")]
@@ -561,6 +563,24 @@ impl Render for GitMasterApp {
         let main_content = self.track("main-content", main_content);
 
         let root = div()
+            .capture_key_down(cx.listener(|this, event, _, cx| {
+                if this
+                    .modal_input
+                    .borrow_mut()
+                    .outside_key_down(&crate::ui::confirmation::key_input(event))
+                {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, _, cx| {
+                if this
+                    .modal_input
+                    .borrow_mut()
+                    .outside_key_up(&event.keystroke.key)
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .flex()
             .flex_col()
             .size_full()

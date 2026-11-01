@@ -220,7 +220,7 @@ impl GitMasterApp {
             .flex_col()
             .flex_shrink_0()
             .child(header)
-            .children(self.render_task_status(cx))
+            .child(self.render_task_status(cx))
             .into_any_element()
     }
 }
@@ -249,9 +249,10 @@ impl GitMasterApp {
         )
     }
 
-    fn render_task_status(&self, cx: &mut Context<'_, Self>) -> Option<AnyElement> {
+    fn render_task_status(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let running = self.busy || self.scanning || self.loading_detail || self.worktree_loading;
-        let summary = self.task_status_summary()?;
+        let summary = self.task_status_summary().unwrap_or_default();
+        let has_summary = !summary.is_empty();
         let normalized = summary.to_ascii_lowercase();
         let failed =
             if normalized.starts_with("fetch all:") || normalized.starts_with("switch to main:") {
@@ -280,13 +281,16 @@ impl GitMasterApp {
             .items_center()
             .gap(px(10.0))
             .h(px(34.0))
+            .flex_shrink_0()
             .px(px(16.0))
             .child(
                 div()
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(rgb(color))
-                    .child(if running {
+                    .child(if !has_summary {
+                        ""
+                    } else if running {
                         "◌  In progress"
                     } else if failed {
                         "●  Failed"
@@ -348,17 +352,24 @@ impl GitMasterApp {
                 )
             });
         strip = strip.child(row);
-        if running {
-            strip = strip.child(
-                div().h(px(2.0)).w_full().with_animation(
-                    "task-activity",
-                    Animation::new(std::time::Duration::from_millis(1400))
-                        .repeat()
-                        .with_easing(pulsating_between(0.25, 0.85)),
-                    |element, opacity| element.bg(rgb(theme::ACCENT)).opacity(opacity),
-                ),
-            );
-        }
+        // Reserve the activity line even while idle so task changes never move content.
+        strip = strip.child(
+            div()
+                .h(px(2.0))
+                .w_full()
+                .flex_shrink_0()
+                .when(running, |line| {
+                    line.child(
+                        div().size_full().with_animation(
+                            "task-activity",
+                            Animation::new(std::time::Duration::from_millis(1400))
+                                .repeat()
+                                .with_easing(pulsating_between(0.25, 0.85)),
+                            |element, opacity| element.bg(rgb(theme::ACCENT)).opacity(opacity),
+                        ),
+                    )
+                }),
+        );
         if self.status_expanded
             && let Some(message) = &self.status_message
         {
@@ -407,6 +418,6 @@ impl GitMasterApp {
                 ),
             );
         }
-        Some(strip.into_any_element())
+        strip.into_any_element()
     }
 }

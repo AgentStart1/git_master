@@ -5,9 +5,17 @@ use crate::{app_state::GitMasterApp, git_ops};
 
 pub(super) enum LogAction {
     Checkout(String),
-    Delete(String),
-    Pull { remote: String },
-    Push { remote: String },
+    Delete {
+        branch: String,
+        force: bool,
+        window: AnyWindowHandle,
+    },
+    Pull {
+        remote: String,
+    },
+    Push {
+        remote: String,
+    },
 }
 
 impl GitMasterApp {
@@ -27,6 +35,16 @@ impl GitMasterApp {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
+        self.prompt_delete_branch(branch, None, window, cx);
+    }
+
+    fn prompt_delete_branch(
+        &mut self,
+        branch: String,
+        failure: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) {
         if self.busy || self.loading_detail {
             return;
         }
@@ -41,14 +59,24 @@ impl GitMasterApp {
         self.set_status(format!("Confirm deletion of {branch}…"));
         cx.notify();
         let entity = cx.entity().downgrade();
+        let handle = window.window_handle();
+        let force = failure.is_some();
         self.remote_action_prompt_task = Some(window.spawn(cx, async move |cx| {
+            let title = if force {
+                format!("Force delete local branch '{branch}'?")
+            } else {
+                format!("Delete local branch '{branch}'?")
+            };
+            let message = failure.map(|error| format!(
+                "Force deletion removes the branch even if it contains unmerged commits. Those commits may become unreachable. Continue?\n\nGit could not delete this branch:\n{error}"
+            )).unwrap_or_else(|| "Git will refuse to delete the branch if it contains unmerged commits.".into());
             let answer = cx
                 .prompt(
                     PromptLevel::Critical,
-                    &format!("Delete local branch '{branch}'?"),
-                    Some("Git will refuse to delete the branch if it contains unmerged commits."),
+                    &title,
+                    Some(&message),
                     &[
-                        PromptButton::ok("Delete branch"),
+                        PromptButton::ok(if force { "Force delete branch" } else { "Delete branch" }),
                         PromptButton::cancel("Cancel"),
                     ],
                 )
@@ -56,7 +84,7 @@ impl GitMasterApp {
             entity
                 .update(cx, |this, cx| {
                     if answer == Ok(0) && this.delete_confirmation_matches(&expected) {
-                        this.run_log_action(LogAction::Delete(branch), cx);
+                        this.run_log_action(LogAction::Delete { branch, force, window: handle }, cx);
                     } else {
                         this.busy = false;
                         this.set_status("Branch deletion cancelled");
@@ -68,7 +96,7 @@ impl GitMasterApp {
     }
 
     pub(super) fn run_log_action(&mut self, action: LogAction, cx: &mut Context<'_, Self>) {
-        if (self.busy && !matches!(action, LogAction::Delete(_))) || self.loading_detail {
+        if (self.busy && !matches!(action, LogAction::Delete { .. })) || self.loading_detail {
             return;
         }
         let Some((index, root, target, selection, submodule)) =
@@ -95,7 +123,7 @@ impl GitMasterApp {
             }
             visible_after.insert(branch.clone());
         }
-        if let LogAction::Delete(branch) = &action {
+        if let LogAction::Delete { branch, .. } = &action {
             visible_after.remove(branch);
             if visible_after.is_empty() {
                 visible_after.insert(expected_branch.clone());
@@ -108,7 +136,7 @@ impl GitMasterApp {
         self.close_context_menu();
         self.set_status(match &action {
             LogAction::Checkout(branch) => format!("Switching to {branch}…"),
-            LogAction::Delete(branch) => format!("Deleting {branch}…"),
+            LogAction::Delete { branch, .. } => format!("Deleting {branch}…"),
             LogAction::Pull { remote } => {
                 format!("Pulling {remote}/{expected_branch} with rebase…")
             }
@@ -116,6 +144,14 @@ impl GitMasterApp {
         });
         cx.notify();
         let navigation = self.navigation_revision;
+        let retry = match &action {
+            LogAction::Delete {
+                branch,
+                force: false,
+                window,
+            } => Some((branch.clone(), *window)),
+            _ => None,
+        };
         self.operation_task = Some(cx.spawn(async move |entity, cx| {
             let expected_target = target.clone();
             let expected_root = root.clone();
@@ -132,7 +168,13 @@ impl GitMasterApp {
                             LogAction::Checkout(branch) => {
                                 git_ops::checkout_branch(&target, &branch)
                             }
-                            LogAction::Delete(branch) => git_ops::delete_branch(&target, &branch),
+                            LogAction::Delete { branch, force, .. } => {
+                                if force {
+                                    git_ops::force_delete_branch(&target, &branch)
+                                } else {
+                                    git_ops::delete_branch(&target, &branch)
+                                }
+                            }
                             LogAction::Pull { remote } => {
                                 git_ops::pull_remote_rebase(&target, &remote, &operation_branch)
                             }
@@ -160,7 +202,8 @@ impl GitMasterApp {
                     )
                 })
                 .await;
-            entity
+            let failure = result.as_ref().err().cloned();
+            let can_retry = entity
                 .update(cx, |this, cx| {
                     let action_succeeded = result.is_ok();
                     this.busy = false;
@@ -185,8 +228,24 @@ impl GitMasterApp {
                     }
                     this.refresh_visible_worktree(cx);
                     cx.notify();
+                    this.navigation_revision == navigation
+                        && this.delete_confirmation_matches(&(
+                            expected_target.display().to_string(),
+                            expected_branch,
+                        ))
                 })
-                .ok();
+                .unwrap_or(false);
+            if can_retry && let (Some((branch, window)), Some(error)) = (retry, failure) {
+                window
+                    .update(cx, |_, window, cx| {
+                        entity
+                            .update(cx, |this, cx| {
+                                this.prompt_delete_branch(branch, Some(error), window, cx);
+                            })
+                            .ok();
+                    })
+                    .ok();
+            }
         }));
     }
 }

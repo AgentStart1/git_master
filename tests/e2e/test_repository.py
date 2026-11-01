@@ -117,8 +117,10 @@ def test_branch_checkout_and_unmerged_deletion_preserve_data(app_factory, isolat
     app.prompt(False)
     assert git(repo, "rev-parse", "--verify", "feature").strip()
     app.click("log-delete-feature")
-    app.prompt(True)
-    assert "not fully merged" in status(app.tree()).lower()
+    app.click("test-prompt-answer-0")
+    tree = app.wait(lambda t: "Force delete local branch 'feature'?" in text(find(t, "test-prompt") or {}), "force delete confirmation")
+    assert "not fully merged" in text(find(tree, "test-prompt")).lower()
+    app.prompt(False)
     assert git(repo, "rev-parse", "--verify", "feature").strip()
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "unsaved main work\n"
 

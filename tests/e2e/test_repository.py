@@ -94,6 +94,8 @@ def test_submodule_placeholders_own_history_and_initialization(app_factory, isol
     tree = app.wait(lambda tree: find(tree, "submodule-info-content"), "uninitialized details")
     assert "Status: Not initialized" in text(tree)
     app.click("init-submodule-btn")
+    app.wait(lambda tree: app.idle(tree) and "Submodule initialized" in text(tree), "submodule initialized")
+    app.tab("info")
     app.wait(lambda tree: app.idle(tree) and find(tree, "info-content"), "submodule initialized")
     assert git(delta / "modules" / "lib", "rev-parse", "HEAD").strip() == git(source, "rev-parse", "HEAD").strip()
 

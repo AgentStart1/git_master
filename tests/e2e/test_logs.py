@@ -120,19 +120,19 @@ def assert_same_anchor(tree, previous):
     assert abs(current[2] - previous[2]) < 1, "the paused painted row must not move"
 
 
-def scroll_up_and_pause(logs, steps):
+def scroll_up_and_pause(logs, steps, *, position=anchor):
     logs.scroll("logs-content", steps)
-    return settled_paused_scroll(logs)
+    return settled_paused_scroll(logs, position=position)
 
 
-def settled_paused_scroll(logs):
+def settled_paused_scroll(logs, *, position=anchor):
     candidate = None
     since = None
     def settled(tree):
         nonlocal candidate, since
         if log_state(tree)["following"] or end_visible(tree):
             return False
-        current = anchor(tree)
+        current = position(tree)
         ticks = log_state(tree)["poll_ticks"]
         if candidate != current:
             candidate, since = current, ticks

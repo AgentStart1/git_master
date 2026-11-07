@@ -320,9 +320,8 @@ impl GitMasterApp {
                 let (target, state) = match git2::Repository::open(path) {
                     Ok(repo) => match crate::repo_actions::main_branch(&repo) {
                         Ok((branch, _)) => {
-                            let state = if repo.state() != git2::RepositoryState::Clean { "Git 操作进行中" }
-                            else if repo.statuses(None).is_ok_and(|s| !s.is_empty()) { "可能受本地修改阻止" } else { "可切换" };
-                            (branch, state.to_owned())
+                            let state = crate::repo_actions::switch_preview_state(&repo, &branch);
+                            (branch, state)
                         },
                         Err(e) => ("—".into(), e),
                     },

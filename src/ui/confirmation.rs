@@ -162,11 +162,14 @@ impl Render for Confirmation {
                         .child(
                             div()
                                 .w(px(170.0))
-                                .text_color(rgb(if row[2].as_str() == Some("可切换") {
-                                    p.green
-                                } else {
-                                    p.yellow
-                                }))
+                                .text_color(rgb(
+                                    if matches!(row[2].as_str(), Some("可切换" | "已在目标分支"))
+                                    {
+                                        p.green
+                                    } else {
+                                        p.yellow
+                                    },
+                                ))
                                 .child(row[2].as_str().unwrap_or("").to_owned()),
                         )
                 }));

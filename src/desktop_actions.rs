@@ -44,8 +44,8 @@ fn command(path: &Path, terminal: bool) -> Command {
 
 pub fn open(path: &Path, terminal: bool) -> Result<(), String> {
     let path = path.canonicalize().map_err(|error| error.to_string())?;
-    if !path.is_dir() {
-        return Err("Directory is unavailable".into());
+    if (terminal && !path.is_dir()) || (!path.is_dir() && !path.is_file()) {
+        return Err("The selected path is unavailable".into());
     }
     // Explorer and PowerShell expect ordinary Windows paths, not verbatim paths.
     #[cfg(target_os = "windows")]

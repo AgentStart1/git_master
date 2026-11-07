@@ -109,7 +109,9 @@ def test_switch_all_to_main_updates_each_repository(app_factory, isolated_git):
         git(repo, "checkout", "-b", "dev")
     (second / "untracked.txt").write_text("keep local\n", encoding="utf-8")
     app = app_factory(root)
-    app.click("switch-all-main-btn")
+    app.click("switch-all-main-btn", await_operation=False)
+    if find(app.tree(), "repo-0") is not None:
+        app.prompt(True)
     app.wait(lambda tree: app.idle(tree) and "succeeded" in text(tree), "switch all completion")
     for repo in (first, second):
         assert git(repo, "branch", "--show-current").strip() == "main"

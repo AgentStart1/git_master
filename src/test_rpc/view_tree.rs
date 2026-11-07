@@ -94,6 +94,9 @@ impl ViewNode {
 }
 
 pub struct TestViewTreeSnapshot {
+    theme: String,
+    preview_section: String,
+    branch_selection: Vec<String>,
     test_prompt: Option<super::prompt::Description>,
     commit_text: Option<Result<String, String>>,
     selected_commit: bool,
@@ -109,6 +112,7 @@ pub struct TestViewTreeSnapshot {
     log_view_mode: LogViewMode,
     history_loading: bool,
     commit_canvas_layout: Option<CommitCanvasLayout>,
+    commit_canvas_state: Option<crate::ui::commit_canvas::CommitCanvasState>,
     scanning: bool,
     loading_detail: bool,
     context_menu: Option<ContextMenu>,
@@ -122,12 +126,17 @@ pub struct TestViewTreeSnapshot {
         Result<crate::worktree::Snapshot, String>,
     )>,
     worktree_loading: bool,
+    worktree_preview: crate::preview_state::PreviewState,
+    blocked_context: Option<String>,
     busy: bool,
 }
 
 impl GitMasterApp {
     pub fn test_view_tree_snapshot(&self) -> TestViewTreeSnapshot {
         TestViewTreeSnapshot {
+            theme: crate::ui::theme::mode().name().to_owned(),
+            preview_section: self.preview_section.title().into(),
+            branch_selection: self.log_visible_branches.iter().cloned().collect(),
             test_prompt: self.test_prompt.borrow().clone(),
             commit_text: self.commit_text.clone(),
             selected_commit: self.selected_commit.is_some(),
@@ -143,6 +152,11 @@ impl GitMasterApp {
             log_view_mode: self.log_view_mode,
             history_loading: self.history_host.is_loading(),
             commit_canvas_layout: self.commit_canvas_layout.clone(),
+            commit_canvas_state: self
+                .commit_canvas_layout
+                .as_ref()
+                .and_then(|layout| self.commit_canvas_states.get(&layout.repository_path))
+                .cloned(),
             scanning: self.scanning,
             loading_detail: self.loading_detail,
             context_menu: self.context_menu.clone(),
@@ -153,6 +167,15 @@ impl GitMasterApp {
             view_revision: self.test_view_revision,
             worktree: self.worktree.clone(),
             worktree_loading: self.worktree_loading,
+            worktree_preview: self.worktree_preview.clone(),
+            blocked_context: self.blocked_action.as_ref().map(|state| {
+                format!(
+                    "{}\n{}\n{}",
+                    state.title,
+                    state.target.path.display(),
+                    state.target.branch
+                )
+            }),
             busy: self.busy,
         }
     }
@@ -181,10 +204,34 @@ impl TestViewTreeSnapshot {
             .with_child(top_bar)
             .with_child(main_content);
 
+        for id in [
+            "theme-light",
+            "theme-dark",
+            "repo-filter-all",
+            "repo-filter-modified",
+            "repo-filter-sync",
+            "repo-search",
+            "log-branch-picker",
+            "checkout-branches",
+            "log-branches-all",
+            "log-branches-current",
+            "branch-search",
+        ] {
+            if reg.contains_key(id) {
+                root = root.with_child(ViewNode::new("button").with_id(id).with_interactive());
+            }
+        }
         if let Some(menu) = self.build_context_menu_node(reg) {
             root = root.with_child(menu);
         }
 
+        if let Some(context) = &self.blocked_context {
+            root = root.with_child(
+                ViewNode::new("dialog")
+                    .with_id("blocked-context")
+                    .with_text(context),
+            );
+        }
         if self.selected_commit {
             root = root.with_child(
                 ViewNode::new("panel")
@@ -206,10 +253,6 @@ impl TestViewTreeSnapshot {
             root = root.with_child(
                 ViewNode::new("dialog")
                     .with_id("test-prompt")
-                    .with_state(serde_json::json!({
-                        "focused_answer": prompt.focused_answer,
-                        "detail_scroll_y": prompt.detail_scroll_y,
-                    }))
                     .with_text(&prompt.message)
                     .with_child(ViewNode::new("text").with_text(&prompt.detail))
                     .with_children(
@@ -235,8 +278,54 @@ impl TestViewTreeSnapshot {
                 attach_bounds(child, reg);
             }
         }
+        for (id, bounds) in reg {
+            if [
+                "overview-",
+                "remote-picker",
+                "remote-more-",
+                "remote-copy-",
+                "remote-refresh-",
+                "remote-select-",
+                "canvas-",
+                "batch-",
+                "recent-workspace-",
+                "change-diff-staged-",
+                "stash-section-",
+                "details-toggle",
+                "ctx-copy-path",
+                "repository-menu",
+                "zero-",
+                "repo-group-",
+                "selected-stage-",
+                "selected-unstage-",
+                "changes-open-file",
+                "commit-file-",
+                "commit-message-",
+                "commit-inline-copy",
+                "blocked-",
+                "placeholder-",
+                "conflict-side-",
+                "conflict-pane-",
+                "detail-retry",
+                "submodule-copy-source",
+                "empty-",
+                "history-append-error",
+            ]
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+            {
+                root.children.push(
+                    ViewNode::new("button")
+                        .with_id(id)
+                        .with_interactive()
+                        .with_bounds_from(reg, id),
+                );
+                let _ = bounds;
+            }
+        }
         attach_bounds(&mut root, reg);
         root.state = Some(serde_json::json!({
+            "theme": self.theme, "display_branches": self.branch_selection, "preview_section":self.preview_section,
             "busy": self.busy, "loading_detail": self.loading_detail,
             "status_revision": self.status_revision,
             "view_revision": self.view_revision,
@@ -259,6 +348,13 @@ impl TestViewTreeSnapshot {
             .with_bounds_from(reg, "top-bar")
             .with_child(ViewNode::new("text").with_text(&dir_label));
 
+        bar = bar.with_child(
+            ViewNode::new("button")
+                .with_id("workspace-menu")
+                .with_text("工作区菜单")
+                .with_interactive()
+                .with_bounds_from(reg, "workspace-menu"),
+        );
         if let Some(msg) = &self.status_message {
             bar = bar.with_child(
                 ViewNode::new("text")
@@ -273,6 +369,11 @@ impl TestViewTreeSnapshot {
                 .with_text("Logs")
                 .with_interactive(),
         );
+        for id in ["status-footer", "task-activity"] {
+            if reg.contains_key(id) {
+                bar = bar.with_child(ViewNode::new("panel").with_id(id).with_bounds_from(reg, id));
+            }
+        }
         for id in ["status-toggle", "status-copy"] {
             if self.status_message.is_some() {
                 bar = bar.with_child(
@@ -491,7 +592,7 @@ impl TestViewTreeSnapshot {
             node = node.with_child(button("stash-save", "Save stash"));
         }
         if self.worktree_loading {
-            return node.with_child(ViewNode::new("text").with_text("Loading…"));
+            node = node.with_child(ViewNode::new("text").with_text("Loading…"));
         }
         let Some((path, result)) = &self.worktree else {
             return node;
@@ -540,7 +641,9 @@ impl TestViewTreeSnapshot {
                         "{} — {}",
                         entry.path.display(),
                         entry.status
-                    )).with_state(serde_json::json!({"path":entry.path.to_string_lossy(),"index":index})))
+                    )).with_state(serde_json::json!({"path":entry.path.to_string_lossy(),"index":index,
+                        "index_status":entry.index_kind.map(crate::worktree::ChangeKind::badge),
+                        "worktree_status":entry.worktree_kind.map(crate::worktree::ChangeKind::badge)})))
                     .with_child(button(&format!("change-diff-{index}"), "Diff"));
                 if entry.unstaged {
                     node = node.with_child(button(&format!("change-stage-{index}"), "Stage"));
@@ -550,11 +653,20 @@ impl TestViewTreeSnapshot {
                 }
             }
         }
+        let Some(preview) = self.worktree_preview.snapshot() else {
+            return node.with_child(ViewNode::new("text").with_id("worktree-diff").with_text(
+                match &self.worktree_preview {
+                    crate::preview_state::PreviewState::Failed { error, .. } => error,
+                    crate::preview_state::PreviewState::Loading { .. } => "Loading preview…",
+                    _ => "",
+                },
+            ));
+        };
         node.with_child(
             ViewNode::new("text")
                 .with_id("worktree-diff")
                 .with_text(
-                    &data
+                    &preview
                         .diff_rows
                         .iter()
                         .map(|row| row.text.as_str())
@@ -562,7 +674,7 @@ impl TestViewTreeSnapshot {
                         .join("\n"),
                 )
                 .with_children(
-                    data.diff_rows
+                    preview.diff_rows
                         .iter()
                         .map(|row| {
                             ViewNode::new(match row.kind {
@@ -710,6 +822,12 @@ impl TestViewTreeSnapshot {
                     ),
             );
             for remote in &detail.remotes {
+                toolbar = toolbar.with_child(
+                    ViewNode::new("button")
+                        .with_id(&format!("remote-more-{}", remote.name))
+                        .with_text("更多")
+                        .with_interactive(),
+                );
                 for action in ["fetch", "pull", "push", "reset"] {
                     toolbar = toolbar.with_child(
                         ViewNode::new("button")
@@ -762,70 +880,6 @@ impl TestViewTreeSnapshot {
             .with_children(entries)
     }
 
-    fn build_commit_canvas_node(&self) -> ViewNode {
-        let Some(layout) = self.commit_canvas_layout.as_ref() else {
-            return ViewNode::new("panel")
-                .with_id("commit-canvas")
-                .with_child(ViewNode::new("text").with_text("Commit graph is unavailable."));
-        };
-        let lanes = layout.lanes.iter().map(|lane| {
-            ViewNode::new("group")
-                .with_id(&format!("commit-lane-{}", lane.id))
-                .with_text(&lane.name)
-        });
-        let nodes = layout.nodes.iter().map(|node| {
-            let mut view = ViewNode::new("commit-node")
-                .with_id(&format!(
-                    "commit-node-{}-{}",
-                    node.id.lane_id, node.id.commit_id
-                ))
-                .with_interactive()
-                .with_child(ViewNode::new("text").with_text(node.short_hash()));
-            match node.kind {
-                CanvasNodeKind::Commit => {
-                    if let Some(entry) = node.entry.as_ref() {
-                        view = view.with_child(ViewNode::new("text").with_text(&entry.message));
-                    }
-                }
-                CanvasNodeKind::Placeholder => {
-                    view = view.with_child(
-                        ViewNode::new("text").with_text("Referenced commit not loaded"),
-                    );
-                }
-                CanvasNodeKind::Head => {
-                    view = view.with_children(
-                        node.head_labels
-                            .iter()
-                            .map(|label| ViewNode::new("label").with_text(label))
-                            .collect(),
-                    );
-                }
-            }
-            view
-        });
-        let edges = layout.edges.iter().map(|edge| {
-            ViewNode::new("graph-edge").with_text(&format!(
-                "{}:{} -> {}:{} ({})",
-                edge.from.lane_id,
-                &edge.from.commit_id[..7.min(edge.from.commit_id.len())],
-                edge.to.lane_id,
-                &edge.to.commit_id[..7.min(edge.to.commit_id.len())],
-                match edge.kind {
-                    CanvasEdgeKind::Parent => "parent",
-                    CanvasEdgeKind::Submodule => "submodule",
-                    CanvasEdgeKind::Head => "head",
-                }
-            ))
-        });
-
-        ViewNode::new("canvas")
-            .with_id("commit-canvas")
-            .with_interactive()
-            .with_children(lanes.collect())
-            .with_children(nodes.collect())
-            .with_children(edges.collect())
-    }
-
     fn build_context_menu_node(&self, reg: &HashMap<String, Bounds<Pixels>>) -> Option<ViewNode> {
         self.context_menu.as_ref()?;
         let mut node = ViewNode::new("menu")
@@ -849,88 +903,8 @@ impl TestViewTreeSnapshot {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "view_tree_tests.rs"]
+mod tests;
 
-    #[test]
-    fn worktree_snapshot_exposes_actions_and_hides_other_repository_data() {
-        let app = GitMasterApp::new();
-        let mut snapshot = app.test_view_tree_snapshot();
-        let path = std::path::PathBuf::from("fixture");
-        snapshot.detail = Some(RepoDetail {
-            path: "fixture".into(),
-            current_branch: "main".into(),
-            branches: vec![],
-            remotes: vec![],
-            head_labels: Default::default(),
-            file_status: Default::default(),
-        });
-        snapshot.worktree = Some((
-            path,
-            Ok(crate::worktree::Snapshot {
-                changes: vec![crate::worktree::Change {
-                    path: "file.txt".into(),
-                    status: "Modified".into(),
-                    staged: true,
-                    unstaged: true,
-                }],
-                stashes: vec![crate::worktree::Stash {
-                    index: 0,
-                    oid: git2::Oid::ZERO_SHA1,
-                    message: "Saved edits".into(),
-                }],
-                diff: "+preview".into(),
-                diff_rows: vec![crate::diff_model::DiffRow::label(
-                    crate::diff_model::RowKind::Note,
-                    "+preview",
-                )],
-            }),
-        ));
-        let find = |node: &ViewNode, id: &str| {
-            node.children
-                .iter()
-                .find(|child| child.id.as_deref() == Some(id))
-                .cloned()
-        };
-        let tree = snapshot.build_worktree_node(false, &HashMap::new());
-        assert!(find(&tree, "change-stage-0").unwrap().interactive);
-        assert!(find(&tree, "change-unstage-0").unwrap().interactive);
-        assert_eq!(
-            find(&tree, "worktree-diff").unwrap().text.as_deref(),
-            Some("+preview")
-        );
-        let stash_tree = snapshot.build_worktree_node(true, &HashMap::new());
-        for action in ["select", "show", "apply", "pop", "drop"] {
-            assert!(
-                find(
-                    &stash_tree,
-                    &format!("stash-{action}-{}", git2::Oid::ZERO_SHA1)
-                )
-                .unwrap()
-                .interactive
-            );
-        }
-        snapshot.busy = true;
-        let tree = snapshot.build_worktree_node(false, &HashMap::new());
-        assert!(!find(&tree, "change-stage-0").unwrap().interactive);
-        snapshot.detail.as_mut().unwrap().path = "other-repo".into();
-        assert!(
-            find(
-                &snapshot.build_worktree_node(false, &HashMap::new()),
-                "worktree-diff"
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn snapshot_builds_a_view_tree_without_accessing_live_ui_state() {
-        let app = GitMasterApp::new();
-
-        let tree = app.test_view_tree_snapshot().build();
-
-        assert_eq!(tree.node_type, "window");
-        assert_eq!(tree.id.as_deref(), Some("root"));
-        assert!(!tree.children.is_empty());
-    }
-}
+#[path = "view_tree_canvas.rs"]
+mod canvas;

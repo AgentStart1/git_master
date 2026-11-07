@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{delete_branch, force_delete_branch, pull_remote_rebase, push_remote};
+use super::{delete_branch, pull_remote_rebase, push_remote};
 
 struct TestDirectory(PathBuf);
 
@@ -118,28 +118,4 @@ fn deleting_a_branch_is_safe_and_cannot_delete_the_current_branch() {
 
     delete_branch(&temp.0, "finished").unwrap();
     assert!(delete_branch(&temp.0, "main").is_err());
-}
-
-#[test]
-fn force_deletion_removes_unmerged_branch_but_protects_current_branch() {
-    let temp = TestDirectory::new();
-    git(&temp.0, &["init", "--initial-branch=main"]);
-    configure_identity(&temp.0);
-    std::fs::write(temp.0.join("tracked.txt"), "base\n").unwrap();
-    git(&temp.0, &["add", "tracked.txt"]);
-    git(&temp.0, &["commit", "-m", "base"]);
-    git(&temp.0, &["checkout", "-b", "feature"]);
-    std::fs::write(temp.0.join("tracked.txt"), "feature\n").unwrap();
-    git(&temp.0, &["commit", "-am", "feature"]);
-    git(&temp.0, &["checkout", "main"]);
-
-    assert!(delete_branch(&temp.0, "feature").is_err());
-    force_delete_branch(&temp.0, "feature").unwrap();
-    let repo = git2::Repository::open(&temp.0).unwrap();
-    assert!(
-        repo.find_branch("feature", git2::BranchType::Local)
-            .is_err()
-    );
-    assert!(force_delete_branch(&temp.0, "main").is_err());
-    assert!(repo.find_branch("main", git2::BranchType::Local).is_ok());
 }

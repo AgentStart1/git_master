@@ -5,7 +5,7 @@ use gpui::*;
 use super::{commit_canvas::branch_columns, theme};
 use crate::{app_state::GitMasterApp, models::LogEntry};
 
-const ROW_HEIGHT: f32 = 86.0;
+const ROW_HEIGHT: f32 = 46.0;
 const COLUMN_WIDTH: f32 = 20.0;
 
 #[derive(Clone, Debug, Default)]
@@ -92,7 +92,7 @@ impl GitMasterApp {
                 .into_any_element();
         };
         let graph = layout.list.clone();
-        let width = graph.width_columns * COLUMN_WIDTH;
+        let width = (graph.width_columns * COLUMN_WIDTH).max(60.0);
         let height = graph.entries.len() as f32 * ROW_HEIGHT;
         let paint_graph = graph.clone();
         let drawing = canvas(
@@ -101,7 +101,7 @@ impl GitMasterApp {
                 let position = |index: usize| {
                     point(
                         bounds.origin.x
-                            + px(16.0 + paint_graph.columns[index] as f32 * COLUMN_WIDTH),
+                            + px(28.0 + paint_graph.columns[index] as f32 * COLUMN_WIDTH),
                         bounds.origin.y + px(index as f32 * ROW_HEIGHT + ROW_HEIGHT / 2.0),
                     )
                 };
@@ -109,7 +109,7 @@ impl GitMasterApp {
                     let mut path = PathBuilder::stroke(px(2.0));
                     for (index, &(column, row)) in route.iter().enumerate() {
                         let point = point(
-                            bounds.origin.x + px(16.0 + column * COLUMN_WIDTH),
+                            bounds.origin.x + px(28.0 + column * COLUMN_WIDTH),
                             bounds.origin.y + px((row + 0.5) * ROW_HEIGHT),
                         );
                         if index == 0 {
@@ -128,21 +128,20 @@ impl GitMasterApp {
                     path.move_to(start);
                     path.line_to(point(start.x, start.y + px(ROW_HEIGHT / 2.0)));
                     if let Ok(path) = path.build() {
-                        window.paint_path(path, rgb(theme::TEXT_SUBTLE));
+                        window.paint_path(path, rgb(theme::palette().text_subtle));
                     }
                 }
                 for index in 0..paint_graph.entries.len() {
                     let center = position(index);
-                    let mut path = PathBuilder::stroke(px(3.0));
-                    path.move_to(point(center.x, center.y - px(4.0)));
-                    path.line_to(point(center.x + px(4.0), center.y));
-                    path.line_to(point(center.x, center.y + px(4.0)));
-                    path.line_to(point(center.x - px(4.0), center.y));
-                    path.line_to(point(center.x, center.y - px(4.0)));
-                    if let Ok(path) = path.build() {
-                        window
-                            .paint_path(path, rgb(theme::graph_color(paint_graph.columns[index])));
-                    }
+                    let mut node = fill(
+                        Bounds::new(
+                            point(center.x - px(5.0), center.y - px(5.0)),
+                            size(px(10.0), px(10.0)),
+                        ),
+                        rgb(theme::graph_color(paint_graph.columns[index])),
+                    );
+                    node.corner_radii = px(5.0).into();
+                    window.paint_quad(node);
                 }
             },
         )
@@ -154,6 +153,17 @@ impl GitMasterApp {
         let rows = graph.entries.iter().map(|entry| {
             let path = layout.repository_path.clone();
             let hash = entry.full_hash.clone();
+            let selected = self
+                .selected_commit
+                .as_ref()
+                .is_some_and(|(_, hash)| hash == &entry.full_hash);
+            let labels = self
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.head_labels.get(&entry.full_hash))
+                .into_iter()
+                .flatten()
+                .filter(|label| label.as_str() != "HEAD");
             self.track(
                 &format!("log-commit-{}", entry.full_hash),
                 div()
@@ -169,71 +179,148 @@ impl GitMasterApp {
                     .flex()
                     .flex_row()
                     .border_b_1()
-                    .border_color(rgb(theme::BORDER))
+                    .border_color(rgb(theme::palette().border))
                     .child(div().w(px(width)).h_full().flex_shrink_0())
+                    .items_center()
+                    .bg(rgb(if selected {
+                        theme::palette().accent_soft
+                    } else {
+                        theme::palette().bg_base
+                    }))
+                    .hover(|style| style.bg(rgb(theme::palette().bg_elevated)))
                     .child(
                         div()
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .gap(px(8.0))
                             .flex_1()
                             .min_w(px(0.0))
-                            .justify_center()
-                            .gap(px(3.0))
-                            .px(px(12.0))
-                            .h_full()
-                            .hover(|style| style.bg(rgb(theme::BG_ELEVATED)))
+                            .pr(px(12.0))
                             .child(
                                 div()
-                                    .text_sm()
-                                    .whitespace_nowrap()
+                                    .id(ElementId::Name(
+                                        format!("log-message-{}", entry.full_hash).into(),
+                                    ))
+                                    .text_size(px(17.0))
+                                    .min_w(px(0.0))
                                     .overflow_hidden()
+                                    .whitespace_nowrap()
                                     .text_ellipsis()
+                                    .tooltip(super::tooltip::text(entry.message.clone()))
                                     .child(entry.message.clone()),
                             )
-                            .child(
+                            .children(labels.take(1).map(|label| {
                                 div()
-                                    .flex()
-                                    .gap(px(6.0))
-                                    .text_xs()
-                                    .text_color(rgb(theme::ACCENT))
-                                    .children(
-                                        self.detail
-                                            .as_ref()
-                                            .and_then(|detail| {
-                                                detail.head_labels.get(&entry.full_hash)
-                                            })
-                                            .into_iter()
-                                            .flatten()
-                                            .map(|label| div().child(label.clone())),
-                                    ),
-                            )
-                            .child(div().text_xs().text_color(rgb(theme::TEXT_SUBTLE)).child(
-                                format!("{}  {} — {}", entry.hash, entry.author, entry.date),
-                            )),
-                    ),
+                                    .id(ElementId::Name(
+                                        format!("log-label-{}-{label}", entry.full_hash).into(),
+                                    ))
+                                    .flex_shrink_0()
+                                    .px(px(5.0))
+                                    .py(px(1.0))
+                                    .rounded(px(3.0))
+                                    .border_1()
+                                    .border_color(rgb(theme::palette().accent))
+                                    .max_w(px(175.0))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .tooltip(super::tooltip::text(label.clone()))
+                                    .text_size(px(15.0))
+                                    .text_color(rgb(theme::palette().accent))
+                                    .child(label.clone())
+                            })),
+                    )
+                    .child(table_cell(&entry.author, 104.0))
+                    .child(table_cell(&entry.hash, 90.0))
+                    .child(table_cell(&relative_date(&entry.date), 90.0)),
             )
         });
         div()
-            .id("log-scroll")
+            .flex()
+            .flex_col()
             .flex_1()
             .min_h(px(0.0))
-            .overflow_y_scroll()
-            .overflow_x_scroll()
             .child(
                 div()
-                    .relative()
-                    .min_w(px(width + 420.0))
-                    .h(px(height))
-                    .child(drawing)
-                    .child(div().flex().flex_col().children(rows)),
+                    .h(px(48.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(rgb(theme::palette().border))
+                    .child(table_cell("图", width))
+                    .child(div().flex_1().text_size(px(17.0)).child("提交信息"))
+                    .child(table_cell("作者", 104.0))
+                    .child(table_cell("哈希", 90.0))
+                    .child(table_cell("时间", 90.0)),
+            )
+            .child(
+                div()
+                    .id("log-scroll")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .overflow_x_scroll()
+                    .child(
+                        div()
+                            .relative()
+                            .min_w(px(width + 650.0))
+                            .h(px(height))
+                            .child(div().flex().flex_col().children(rows))
+                            .child(drawing),
+                    ),
             )
             .into_any_element()
+    }
+}
+
+fn table_cell(value: &str, width: f32) -> Div {
+    div()
+        .w(px(width))
+        .flex_shrink_0()
+        .pr(px(10.0))
+        .text_size(px(16.0))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
+        .child(value.to_owned())
+}
+pub(super) fn relative_date(value: &str) -> String {
+    relative_date_at(value, chrono::Utc::now().naive_utc())
+}
+
+fn relative_date_at(value: &str, now: chrono::NaiveDateTime) -> String {
+    let parsed = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").ok();
+    let Some(date) = parsed else {
+        return value.to_owned();
+    };
+    let hours = (now - date).num_hours().max(0);
+    if hours == 0 {
+        "刚刚".into()
+    } else if hours < 24 {
+        format!("{hours} 小时前")
+    } else {
+        format!("{} 天前", hours / 24)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn relative_dates_compare_utc_commit_times_across_local_offsets() {
+        for offset in ["+08:00", "-07:00", "+00:00"] {
+            let now = chrono::DateTime::parse_from_rfc3339(&format!("2026-11-07T12:00:00{offset}"))
+                .unwrap()
+                .naive_utc();
+            for (age, expected) in [(0, "刚刚"), (2, "2 小时前"), (48, "2 天前")] {
+                let commit = (now - chrono::Duration::hours(age))
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string();
+                assert_eq!(relative_date_at(&commit, now), expected);
+            }
+        }
+    }
     #[::core::prelude::v1::test]
     fn retains_both_merge_parents_and_truncated_history() {
         let entry = |hash: &str, parents: &[&str]| LogEntry {

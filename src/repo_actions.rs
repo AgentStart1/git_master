@@ -57,7 +57,7 @@ pub fn remote_statuses(repo: &Repository) -> Vec<RemoteStatus> {
     statuses
 }
 
-fn main_branch(repo: &Repository) -> Result<(String, Option<String>), String> {
+pub(crate) fn main_branch(repo: &Repository) -> Result<(String, Option<String>), String> {
     let remotes = repo.remotes().map_err(|error| error.to_string())?;
     let mut defaults = remotes
         .iter()
@@ -96,6 +96,29 @@ fn main_branch(repo: &Repository) -> Result<(String, Option<String>), String> {
     Err("Cannot determine main branch (no remote HEAD or local main/master)".into())
 }
 
+pub(crate) fn switch_preview_state(repo: &Repository, branch: &str) -> String {
+    if repo.state() != git2::RepositoryState::Clean {
+        return "Git 操作进行中".into();
+    }
+    let head = match repo.head() {
+        Ok(head) => Some(head),
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
+        Err(error) => return format!("读取当前分支失败：{error}"),
+    };
+    if head.as_ref().is_some_and(|head| {
+        head.is_branch() && head.name().ok() == Some(format!("refs/heads/{branch}").as_str())
+    }) {
+        return "已在目标分支".into();
+    }
+    let mut options = git2::StatusOptions::new();
+    options.include_ignored(false).include_untracked(true);
+    match repo.statuses(Some(&mut options)) {
+        Ok(statuses) if statuses.is_empty() => "可切换".into(),
+        Ok(_) => "可能受本地修改阻止".into(),
+        Err(error) => format!("读取 Git 状态失败：{error}"),
+    }
+}
+
 pub fn switch_to_main(path: &Path) -> Result<String, String> {
     let repo = Repository::open(path).map_err(|error| error.to_string())?;
     let (branch, remote) = main_branch(&repo)?;
@@ -120,6 +143,60 @@ pub fn switch_to_main(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn preview_repo(bare: bool) -> (tempfile::TempDir, Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = if bare {
+            Repository::init_bare(dir.path()).unwrap()
+        } else {
+            Repository::init(dir.path()).unwrap()
+        };
+        let signature = git2::Signature::now("Test", "test@example.invalid").unwrap();
+        let tree_id = repo.treebuilder(None).unwrap().write().unwrap();
+        let commit_id = repo
+            .commit(
+                Some("refs/heads/main"),
+                &signature,
+                &signature,
+                "initial",
+                &repo.find_tree(tree_id).unwrap(),
+                &[],
+            )
+            .unwrap();
+        repo.reference("refs/heads/feature", commit_id, false, "test")
+            .unwrap();
+        repo.set_head("refs/heads/feature").unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn switch_preview_ignores_ignored_files() {
+        let (dir, repo) = preview_repo(false);
+        std::fs::write(dir.path().join("ignored.tmp"), "cache").unwrap();
+        std::fs::write(repo.path().join("info/exclude"), "ignored.tmp\n").unwrap();
+        assert_eq!(switch_preview_state(&repo, "main"), "可切换");
+    }
+
+    #[test]
+    fn switch_preview_warns_about_untracked_files() {
+        let (dir, repo) = preview_repo(false);
+        std::fs::write(dir.path().join("local.txt"), "local").unwrap();
+        assert_eq!(switch_preview_state(&repo, "main"), "可能受本地修改阻止");
+    }
+
+    #[test]
+    fn switch_preview_recognizes_target_branch_even_with_local_changes() {
+        let (dir, repo) = preview_repo(false);
+        repo.set_head("refs/heads/main").unwrap();
+        std::fs::write(dir.path().join("local.txt"), "local").unwrap();
+        assert_eq!(switch_preview_state(&repo, "main"), "已在目标分支");
+    }
+
+    #[test]
+    fn switch_preview_reports_status_read_failure() {
+        let (_dir, repo) = preview_repo(true);
+        assert!(switch_preview_state(&repo, "main").starts_with("读取 Git 状态失败："));
+    }
 
     #[test]
     fn remote_counts_follow_fetch_refspecs_and_configured_upstream_names() {

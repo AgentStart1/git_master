@@ -54,15 +54,29 @@ pub(super) fn stabilize_history_layout(
         .filter(|node| node.kind == CanvasNodeKind::Commit)
         .map(|node| (node.id.commit_id.clone(), node.default_position))
         .collect::<HashMap<_, _>>();
-    for node in &mut next.nodes {
+    for index in 0..next.nodes.len() {
+        let node = &mut next.nodes[index];
         if node.kind == CanvasNodeKind::Head
             && !positions.contains_key(&node.id)
             && let Some(commit) = node.id.commit_id.strip_prefix("head:")
             && let Some(position) = commits.get(commit)
         {
-            node.default_position.x = position.x - node.width - 28.0;
-            node.default_position.y = bottom;
-            bottom += node.height + 32.0;
+            node.default_position =
+                super::canvas_layout::default_head_position(*position, node.height);
+            let position = super::canvas_layout::free_head_position(
+                &next.nodes[index],
+                next.nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(other_index, other)| {
+                        (other_index != index
+                            && (!other.is_head()
+                                || positions.contains_key(&other.id)
+                                || other_index < index))
+                            .then_some(other)
+                    }),
+            );
+            next.nodes[index].default_position = position;
         }
     }
 }
@@ -89,7 +103,7 @@ impl GitMasterApp {
         };
         let path = previous.repository_path.clone();
         let branches = self.log_visible_branches.clone();
-        let selection = self.selected.clone();
+        let selection = self.selected_path();
         let navigation = self.navigation_revision;
         let limit = previous.history_limit.saturating_add(HISTORY_BATCH);
         self.history_task = Some(cx.spawn(async move |entity, cx| {
@@ -116,7 +130,7 @@ impl GitMasterApp {
                     if this.busy
                         || this.loading_detail
                         || this.navigation_revision != navigation
-                        || this.selected != selection
+                        || this.selected_path() != selection
                         || this.log_visible_branches != expected_branches
                         || !this.commit_canvas_layout.as_ref().is_some_and(|layout| {
                             layout.repository_path == expected_path
@@ -134,11 +148,22 @@ impl GitMasterApp {
                                 .ensure_layout(&layout);
                             this.log_entries = layout.list.entries.clone();
                             this.commit_canvas_layout = Some(layout);
+                            if this.commit_text.is_none()
+                                && let Some((path, hash)) = this.selected_commit.clone()
+                                && this.commit_canvas_layout.as_ref().is_some_and(|l| {
+                                    l.nodes.iter().any(|n| {
+                                        n.kind == CanvasNodeKind::Commit && n.id.commit_id == hash
+                                    })
+                                })
+                            {
+                                this.open_commit_details(path, hash, cx);
+                                this.canvas_reveal_selection = false;
+                            }
                             this.set_status("More history loaded");
                         }
                         None => {
                             this.history_host.failed();
-                            this.set_status("Could not load more history; retry Load more");
+                            this.set_failure("Could not load more history; retry Load more");
                         }
                     }
                     cx.notify();

@@ -150,11 +150,6 @@ pub fn delete_branch(repo_path: &Path, branch: &str) -> Result<String, String> {
     run_git(repo_path, ["branch", "--delete", "--", branch])
 }
 
-/// Deletes even unmerged branches. Callers must obtain explicit confirmation.
-pub fn force_delete_branch(repo_path: &Path, branch: &str) -> Result<String, String> {
-    run_git(repo_path, ["branch", "--delete", "--force", "--", branch])
-}
-
 pub fn fetch_remote(repo_path: &Path, remote: &str) -> Result<String, String> {
     run_git(repo_path, ["fetch", "--prune", "--", remote])
 }
@@ -243,13 +238,51 @@ pub fn init_submodule(repo_path: &Path, relative_path: &Path) -> Result<String, 
 }
 
 pub fn get_repo_detail(repo_path: &Path) -> Option<RepoDetail> {
+    #[cfg(feature = "test-rpc")]
+    crate::test_rpc::worker_gate::wait("GIT_MASTER_TEST_DETAIL_READ_GATE");
     let repo = Repository::open(repo_path).ok()?;
     let current_branch = get_branch_name(&repo);
     let branches = list_local_branches(repo_path);
     let remotes = list_remotes(&repo);
     let file_status = build_file_status(&repo);
 
+    let local = repo.head().ok().and_then(|h| h.target());
+    let comparison_refs = repo
+        .branches(Some(BranchType::Remote))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|(b, _)| {
+            let name = b.name().ok().flatten()?.to_owned();
+            if name.ends_with("/HEAD") {
+                return None;
+            }
+            let counts = local.and_then(|local| {
+                b.get()
+                    .target()
+                    .and_then(|target| repo.graph_ahead_behind(local, target).ok())
+            });
+            Some((name, counts))
+        })
+        .collect();
+    let upstream = repo
+        .find_branch(&current_branch, BranchType::Local)
+        .ok()
+        .and_then(|b| b.upstream().ok())
+        .and_then(|b| b.name().ok().flatten().map(str::to_owned));
     Some(RepoDetail {
+        comparison_refs,
+        upstream,
+        head_oid: repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| oid.to_string()),
+        git_state: match repo.state() {
+            git2::RepositoryState::Clean => "正常".into(),
+            state => format!("{state:?} 进行中"),
+        },
         path: repo_path.display().to_string(),
         current_branch,
         branches,
@@ -324,6 +357,8 @@ pub fn get_commit_graph_page(
     branches: &[String],
     limit: usize,
 ) -> Option<(CommitGraph, bool)> {
+    #[cfg(feature = "test-rpc")]
+    crate::test_rpc::worker_gate::wait("GIT_MASTER_TEST_HISTORY_READ_GATE");
     let repo = Repository::open(&repo_info.path).ok()?;
     let (main_entries, mut has_more) = read_commit_history_page(&repo, branches, limit);
     let mut lanes = Vec::with_capacity(repo_info.submodules.len() + 1);
@@ -383,6 +418,7 @@ pub fn get_commit_graph_page(
 
     Some((
         CommitGraph {
+            current_branch: repo_info.current_branch.clone(),
             repository_path: repo_info.path.clone(),
             lanes,
             submodule_links,
@@ -404,7 +440,10 @@ fn collect_branch_heads(repo: &Repository) -> std::collections::HashMap<String, 
         let Ok(Some(name)) = branch.name() else {
             continue;
         };
-        let Some(oid) = branch.get().target() else {
+        let Ok(reference) = branch.get().resolve() else {
+            continue;
+        };
+        let Some(oid) = reference.target() else {
             continue;
         };
         labels
@@ -544,16 +583,37 @@ fn read_commit_history_page(
         let full_hash = commit.id().to_string();
         let hash = full_hash[..7.min(full_hash.len())].to_string();
         let parent_hashes = commit.parent_ids().map(|id| id.to_string()).collect();
-        let author = commit.author().name().unwrap_or("unknown").to_string();
+        // Ordinary UTF-8 histories stay on the libgit2 fast path. Legacy
+        // encodings use the same Git transcoding boundary as commit details.
+        let decoded = (commit
+            .message_encoding()
+            .ok()
+            .flatten()
+            .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("UTF-8"))
+            || commit.message().is_err()
+            || commit.author().name().is_err())
+        .then(|| {
+            crate::commit_details::decoded_metadata(
+                repo.workdir().unwrap_or(repo.path()),
+                &full_hash,
+            )
+            .ok()
+        })
+        .flatten();
+        let author = decoded
+            .as_ref()
+            .map(|(author, _)| author.split(" <").next().unwrap_or(author).to_owned())
+            .unwrap_or_else(|| commit.author().name().unwrap_or("unknown").to_string());
         let time = commit.time();
         let date = chrono::Utc
             .timestamp_opt(time.seconds(), 0)
             .single()
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default();
-        let message = commit
-            .message()
-            .unwrap_or("")
+        let message = decoded
+            .as_ref()
+            .map(|(_, message)| message.as_str())
+            .unwrap_or_else(|| commit.message().unwrap_or(""))
             .lines()
             .next()
             .unwrap_or("")
@@ -628,10 +688,28 @@ fn check_dirty(repo: &Repository) -> bool {
 }
 
 fn get_branch_name(repo: &Repository) -> String {
-    repo.head()
-        .ok()
-        .and_then(|r| r.shorthand().ok().map(String::from))
-        .unwrap_or_else(|| "HEAD detached".into())
+    match repo.head() {
+        Ok(head) if head.is_branch() => head.shorthand().unwrap_or("未知分支").to_owned(),
+        Ok(_) => "HEAD detached".into(),
+        Err(e)
+            if matches!(
+                e.code(),
+                git2::ErrorCode::UnbornBranch | git2::ErrorCode::NotFound
+            ) =>
+        {
+            repo.find_reference("HEAD")
+                .ok()
+                .and_then(|h| {
+                    h.symbolic_target()
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.strip_prefix("refs/heads/"))
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| "未知分支".into())
+        }
+        Err(_) => "未知分支".into(),
+    }
 }
 
 fn build_file_status(repo: &Repository) -> FileStatusSummary {

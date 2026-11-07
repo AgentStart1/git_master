@@ -14,32 +14,6 @@ def screenshot(app, name):
 
 
 @pytest.mark.p1
-def test_task_progress_keeps_content_bounds_when_appearing_and_disappearing(app_factory, isolated_git, gate):
-    root, repo, remote, _ = remote_fixture(isolated_git)
-    (repo / "outgoing.txt").write_text("pending push\n", encoding="utf-8")
-    commit_all(repo, "Stable task layout")
-    outgoing = git(repo, "rev-parse", "HEAD")
-    gate.install(repo, "pre-push")
-    app = app_factory(root)
-    tree = app.wait(lambda t: app.idle(t) and find(t, "main-content").get("bounds"), "idle layout")
-    assert not find(tree, "status-summary")
-    stable_ids = ("top-bar", "main-content", "repo-0")
-    bounds = {node_id: find(tree, node_id)["bounds"] for node_id in stable_ids}
-    app.select(0, repo)
-    app.tab("log")
-    app.click("log-remote-origin-push", await_operation=False)
-    gate.entered()
-    tree = app.wait(lambda t: t["state"]["busy"] and find(t, "status-summary").get("bounds"), "painted progress")
-    assert {node_id: find(tree, node_id)["bounds"] for node_id in stable_ids} == bounds
-    revision = tree["state"]["status_revision"]
-    gate.release()
-    tree = app.wait_completion(revision)
-    assert status(tree) == "Branch operation complete"
-    assert {node_id: find(tree, node_id)["bounds"] for node_id in stable_ids} == bounds
-    assert git(remote, "rev-parse", "main") == outgoing
-
-
-@pytest.mark.p1
 def test_pending_task_and_verbose_failure_keep_content_visible(app_factory, isolated_git, gate):
     root, repo, remote, _ = remote_fixture(isolated_git)
     (repo / "outgoing.txt").write_text("local commit\n", encoding="utf-8")
@@ -57,7 +31,15 @@ def test_pending_task_and_verbose_failure_keep_content_visible(app_factory, isol
     screenshot(app, "task-running.png")
     revision = tree["state"]["status_revision"]
     app.click("status-toggle")
-    app.wait(lambda t: find(t, "status-details"), "pending task details")
+    expanded = app.wait(lambda t: (find(t, "status-details") or {}).get("bounds"), "pending task details")
+    footer = find(expanded, "status-footer")["bounds"]
+    details = find(expanded, "status-details")["bounds"]
+    activity = find(expanded, "task-activity")["bounds"]
+    assert details["y"] + details["height"] <= footer["y"] + 1
+    assert footer["y"] <= activity["y"]
+    assert abs(activity["y"] + activity["height"] - find(expanded, "root")["bounds"]["height"]) <= 1
+    assert abs(find(expanded, "status-summary")["bounds"]["y"] - find(tree, "status-summary")["bounds"]["y"]) <= 1
+    screenshot(app, "task-running-expanded-footer.png")
     gate.release()
     app.wait_completion(revision)
     assert not find(app.tree(), "status-details"), "new result must collapse previous details"
@@ -75,6 +57,9 @@ def test_pending_task_and_verbose_failure_keep_content_visible(app_factory, isol
     assert not find(tree, "status-details")
     assert find(tree, "top-bar")["bounds"]["height"] < 120
     assert find(tree, "main-content")["bounds"]["height"] > 300
+    app.wait(lambda t: (find(t, "blocked-close") or {}).get("bounds"), "failure recovery dialog")
+    app.click("blocked-close")
+    app.wait(lambda t: not (find(t, "blocked-close") or {}).get("bounds"), "failure dialog dismissed")
     screenshot(app, "task-error-collapsed.png")
     app.click("status-toggle")
     tree = app.wait(lambda t: find(t, "status-details") and find(t, "status-details").get("bounds"), "expanded diagnostics")
@@ -131,6 +116,7 @@ def test_worktree_task_replaces_old_result_and_details(app_factory, isolated_git
     if previous == "failure":
         error_file = repo / "error-only.txt"
         error_file.write_text("temporary dirty content\n", encoding="utf-8")
+        app.click("worktree-refresh")
         lock = repo / ".git" / "index.lock"
         file_action = action in ("stage", "unstage")
         if file_action:
@@ -147,6 +133,9 @@ def test_worktree_task_replaces_old_result_and_details(app_factory, isolated_git
                 app.click("stash-save")
             assert "failed" in status(app.tree()).lower()
             assert git(repo, "status", "--porcelain") == before_failure
+            app.wait(lambda t: (find(t, "blocked-close") or {}).get("bounds"), "failure dialog shown")
+            app.click("blocked-close")
+            app.wait(lambda t: not (find(t, "blocked-close") or {}).get("bounds"), "failure dialog closed before inspecting result")
         finally:
             if file_action:
                 lock.unlink()

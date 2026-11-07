@@ -1,3 +1,4 @@
 pytest>=8.3,<10
 PyAutoGUI==0.9.54
 Pillow>=10,<14
+pyperclip>=1.9,<2

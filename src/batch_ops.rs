@@ -6,9 +6,10 @@ use crate::{git_ops, models::RepoInfo};
 pub struct BatchHost {
     paths: Vec<PathBuf>,
     action: BatchAction,
+    retry: Option<Vec<BatchItem>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum BatchAction {
     Fetch,
     SwitchMain,
@@ -174,17 +175,25 @@ mod tests {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct BatchItem {
+    pub path: PathBuf,
+    pub remote: Option<String>,
+    pub outcome: Result<(), String>,
+    pub skipped: bool,
+}
+#[derive(Clone)]
 pub struct BatchResult {
-    action: BatchAction,
+    pub action: BatchAction,
+    pub items: Vec<BatchItem>,
     pub refreshed: Vec<(PathBuf, Option<RepoInfo>)>,
     pub succeeded: usize,
     pub failed: usize,
     pub skipped: usize,
 }
-
 impl BatchResult {
     pub fn message(&self) -> String {
-        let summary = match self.action {
+        match self.action {
             BatchAction::SwitchMain => format!(
                 "Switch to Main: {} succeeded, {} failed",
                 self.succeeded, self.failed
@@ -193,80 +202,107 @@ impl BatchResult {
                 "Fetch All: {} succeeded, {} failed, {} projects without remotes",
                 self.succeeded, self.failed, self.skipped
             ),
-        };
-        if self.failed > 0 {
-            format!(
-                "{summary}. Log: {}",
-                crate::operation_log::log_path().display()
-            )
-        } else {
-            summary
         }
     }
+    fn record(
+        &mut self,
+        path: PathBuf,
+        remote: Option<String>,
+        outcome: Result<(), String>,
+        skipped: bool,
+    ) {
+        if skipped {
+            self.skipped += 1;
+        } else if outcome.is_ok() {
+            self.succeeded += 1;
+        } else {
+            self.failed += 1;
+        }
+        self.items.push(BatchItem {
+            path,
+            remote,
+            outcome: outcome.map_err(|e| crate::operation_log::redact(&e)),
+            skipped,
+        });
+    }
 }
-
 impl BatchHost {
     pub fn new(paths: Vec<PathBuf>, action: BatchAction) -> Self {
-        Self { paths, action }
+        Self {
+            paths,
+            action,
+            retry: None,
+        }
     }
-
+    pub fn retry(action: BatchAction, items: Vec<BatchItem>) -> Self {
+        Self {
+            paths: Vec::new(),
+            action,
+            retry: Some(items),
+        }
+    }
     pub fn run(self) -> BatchResult {
         let mut result = BatchResult {
             action: self.action,
+            items: Vec::new(),
             refreshed: Vec::new(),
             succeeded: 0,
             failed: 0,
             skipped: 0,
         };
+        if let Some(items) = self.retry {
+            for item in items
+                .into_iter()
+                .filter(|i| i.outcome.is_err() && !i.skipped)
+            {
+                if matches!(self.action, BatchAction::SwitchMain) {
+                    let outcome = crate::repo_actions::switch_to_main(&item.path).map(|_| ());
+                    result.record(item.path.clone(), None, outcome, false);
+                } else if let Some(remote) = item.remote {
+                    let outcome = git_ops::fetch_remote(&item.path, &remote).map(|_| ());
+                    result.record(item.path.clone(), Some(remote), outcome, false);
+                } else {
+                    Self::fetch_path(&item.path, &mut result);
+                }
+                result
+                    .refreshed
+                    .push((item.path.clone(), git_ops::build_repo_info(&item.path)));
+            }
+            return result;
+        }
         for path in self.paths {
             if matches!(self.action, BatchAction::SwitchMain) {
-                match crate::repo_actions::switch_to_main(&path) {
-                    Ok(_) => result.succeeded += 1,
-                    Err(error) => {
-                        result.failed += 1;
-                        let _ = crate::operation_log::append(&format!(
-                            "Switch to Main repo={path:?}: {error}"
-                        ));
-                    }
-                }
-                let refreshed = git_ops::build_repo_info(&path);
-                result.refreshed.push((path, refreshed));
-                continue;
+                let outcome = crate::repo_actions::switch_to_main(&path).map(|_| ());
+                result.record(path.clone(), None, outcome, false);
+            } else {
+                Self::fetch_path(&path, &mut result);
             }
-            // Enumerate explicitly: remotes marked skipFetchAll must also be fetched.
-            let remotes = git2::Repository::open(&path).and_then(|repo| {
-                let names = repo.remotes()?;
-                names
-                    .iter()
-                    .map(|name| {
-                        name?
-                            .map(str::to_owned)
-                            .ok_or_else(|| git2::Error::from_str("Remote name is not UTF-8"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            });
-            match remotes {
-                Ok(remotes) => {
-                    if remotes.is_empty() {
-                        result.skipped += 1;
-                    }
-                    for remote in remotes {
-                        match git_ops::fetch_remote(&path, &remote) {
-                            Ok(_) => result.succeeded += 1,
-                            Err(_) => result.failed += 1,
-                        }
-                    }
-                }
-                Err(error) => {
-                    result.failed += 1;
-                    let _ = crate::operation_log::append(&format!(
-                        "Fetch All: cannot enumerate remotes repo={path:?}: {error}"
-                    ));
-                }
-            }
-            let refreshed = git_ops::build_repo_info(&path);
-            result.refreshed.push((path, refreshed));
+            result
+                .refreshed
+                .push((path.clone(), git_ops::build_repo_info(&path)));
         }
         result
+    }
+    fn fetch_path(path: &std::path::Path, result: &mut BatchResult) {
+        let remotes = git2::Repository::open(path).and_then(|repo| {
+            repo.remotes()?
+                .iter()
+                .map(|name| {
+                    name?
+                        .map(str::to_owned)
+                        .ok_or_else(|| git2::Error::from_str("Remote name is not UTF-8"))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        });
+        match remotes {
+            Ok(names) if names.is_empty() => result.record(path.to_owned(), None, Ok(()), true),
+            Ok(names) => {
+                for name in names {
+                    let outcome = git_ops::fetch_remote(path, &name).map(|_| ());
+                    result.record(path.to_owned(), Some(name), outcome, false);
+                }
+            }
+            Err(error) => result.record(path.to_owned(), None, Err(error.to_string()), false),
+        }
     }
 }

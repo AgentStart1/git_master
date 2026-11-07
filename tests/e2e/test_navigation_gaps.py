@@ -11,7 +11,9 @@ def test_empty_workspace_and_clean_repo_refresh_external_changes(app_factory, is
     app = app_factory(empty)
     assert not find(app.tree(), "repo-0")
     app.click("fetch-all-btn")
-    app.click("switch-all-main-btn")
+    app.click("switch-all-main-btn", await_operation=False)
+    if find(app.tree(), "repo-0") is not None:
+        app.prompt(True)
     assert app.idle(app.tree())
     app.close()
     root = isolated_git / "workspace"
@@ -190,7 +192,9 @@ def test_batch_main_resolves_non_main_default_branches(app_factory, isolated_git
     else:
         git(repo, "remote", "set-head", "origin", "--auto")
     app = app_factory(root)
-    app.click("switch-all-main-btn")
+    app.click("switch-all-main-btn", await_operation=False)
+    if find(app.tree(), "repo-0") is not None:
+        app.prompt(True)
     app.wait(lambda t: app.idle(t) and "1 succeeded, 0 failed" in text(t), "resolved default branch")
     assert git(repo, "branch", "--show-current").strip() == target
     assert git(repo, "status", "--porcelain") == ""

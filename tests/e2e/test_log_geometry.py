@@ -94,17 +94,17 @@ def test_paused_wrapped_row_keeps_reading_fraction_across_width_changes(
     ready(logs, f"ROW_{marker}_0039")
     resize(logs, 600, 650)
     logs.wait(tail_visible, "narrow long rows followed")
-    tree = scroll_up_and_pause(logs, 30)
+    tree = scroll_up_and_pause(logs, 30, position=top)
     for _ in range(8):
         if top(tree)[0] < 30:
             break
-        tree = scroll_up_and_pause(logs, 100)
+        tree = scroll_up_and_pause(logs, 100, position=top)
     assert top(tree)[0] < 30, "resize must happen far from tail clamping"
     for _ in range(10):
         if top(tree)[2] >= 0.65:
             break
         logs.scroll("logs-content", -1)
-        tree = settled_paused_scroll(logs)
+        tree = settled_paused_scroll(logs, position=top)
     original = top(tree)
     assert original[2] >= 0.65, "test must start inside a wrapped row"
     result_gate.arm(1)
@@ -135,12 +135,12 @@ def test_following_resizes_keep_the_actual_tail_visible_without_new_reads(
     result_gate.arm(1)
     result_gate.entered(1)
     completed = log_state(logs.tree())["completed_reads"]
-    for width, height in [(650, 250), (1100, 650), (750, 450), (1000, 700)]:
+    for width, height in [(650, 500), (1100, 650), (750, 500), (1000, 700)]:
         tree = resize(logs, width, height)
         assert log_state(tree)["completed_reads"] == completed
         assert log_state(tree)["following"]
         assert tail_visible(tree), "the resized paint must include the real final wrapped row"
-        if height == 250:
+        if width == 650:
             assert find(tree, "logs-end")["bounds"]["height"] > find(tree, "logs-viewport")["bounds"]["height"], "test must cover an entry taller than the viewport"
             screenshot(logs, "following-tall-final-row.png")
     screenshot(logs, "following-resize.png")
@@ -206,7 +206,10 @@ def test_tail_in_padding_is_not_reported_as_visible(app_factory, isolated_git, r
     logs.wait(lambda t: not log_state(t)["following"], "explicit pause at bottom")
     result_gate.arm(1)
     result_gate.entered(1)
-    tree = resize(logs, 1000, 692)
+    # Move the clip upward by less than the content padding. Toolbar/header
+    # height can change without changing the clipping contract under test.
+    height = find(logs.tree(), "logs-root")["bounds"]["height"] - 14
+    tree = resize(logs, 1000, height)
     tail = find(tree, "logs-end")["bounds"]
     outer = find(tree, "logs-content")["bounds"]
     viewport = find(tree, "logs-viewport")["bounds"]

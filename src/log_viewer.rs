@@ -114,9 +114,12 @@ pub struct LogViewerHost;
 
 impl LogViewerHost {
     pub fn load() -> Result<Snapshot, String> {
+        Self::load_file(None)
+    }
+    pub fn load_file(selected: Option<PathBuf>) -> Result<Snapshot, String> {
         #[cfg(feature = "test-rpc")]
         crate::test_rpc::worker_gate::wait("GIT_MASTER_TEST_LOGS_GATE");
-        let path = crate::operation_log::log_path();
+        let path = selected.unwrap_or_else(crate::operation_log::log_path);
         let result =
             read_tail(&path).map_err(|error| format!("Cannot read {}: {error}", path.display()));
         #[cfg(feature = "test-rpc")]

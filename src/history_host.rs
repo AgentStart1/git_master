@@ -15,6 +15,10 @@ impl HistoryHost {
         self.auto_failed = true;
     }
 
+    pub fn has_error(&self) -> bool {
+        self.auto_failed
+    }
+
     pub fn is_loading(&self) -> bool {
         self.loading.is_some()
     }

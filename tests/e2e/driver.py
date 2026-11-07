@@ -167,11 +167,11 @@ class App:
             def xdo(*args):
                 return subprocess.check_output(["xdotool", *map(str, args)], text=True, timeout=3).strip()
             title = getattr(self, "window_title", None)
+            windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
             if title is not None:
-                import re
-                windows = xdo("search", "--onlyvisible", "--all", "--pid", self.proc.pid, "--name", "^" + re.escape(title) + "$").splitlines()
-            else:
-                windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
+                # Search uses the legacy X11 title; getwindowname reads the UTF-8
+                # title, which is required for independently titled Chinese windows.
+                windows = [window for window in windows if xdo("getwindowname", window) == title]
             assert len(windows) == 1, windows
             self.window = windows[0]
             # Xvfb has no window manager: focusing alone leaves another native
@@ -197,6 +197,25 @@ class App:
 
     def click(self, node_id, *, button="left", await_operation=True):
         import pyautogui
+        if node_id in ("fetch-all-btn", "switch-all-main-btn", "change-dir-btn", "open-logs-btn") and not (self.node(node_id) or {}).get("bounds"):
+            self.click("workspace-menu", await_operation=False)
+        if node_id.startswith("log-remote-") and not (self.node(node_id) or {}).get("bounds"):
+            remote = node_id[len("log-remote-"):].rsplit("-", 1)[0]
+            self.click("remote-picker", await_operation=False)
+            self.click("remote-select-" + remote, await_operation=False)
+        if node_id.startswith("log-remote-") and node_id.endswith("-reset") and not (self.node(node_id) or {}).get("bounds"):
+            self.click("remote-more-" + node_id[len("log-remote-"):-len("-reset")], await_operation=False)
+        if node_id.startswith("stash-show-"):
+            node_id = node_id.replace("stash-show-", "stash-select-", 1)
+        if node_id.startswith(("stash-apply-", "stash-pop-", "stash-drop-")) and not (self.node(node_id) or {}).get("bounds"):
+            self.click("stash-select-" + node_id.split("-", 2)[2])
+        if node_id.startswith("change-diff-") and not node_id.startswith("change-diff-staged-") and not (self.node(node_id) or {}).get("bounds"):
+            node_id = node_id.replace("change-diff-", "change-diff-staged-", 1)
+        # Branch actions now live in explicit display/checkout menus.
+        picker = ("log-branch-picker" if node_id.startswith("log-branch-") and node_id != "log-branch-picker"
+                  else "checkout-branches" if node_id.startswith(("log-checkout-", "log-delete-")) else None)
+        if picker and not (self.node(node_id) or {}).get("bounds"):
+            self.click(picker, await_operation=False)
         position = self.point(node_id)
         before = self.tree()
         pyautogui.click(*position, button=button)
@@ -245,13 +264,15 @@ class App:
     def prompt(self, accept, *, await_operation=True):
         tree = self.wait(lambda tree: find(tree, "test-prompt"), "confirmation dialog")
         revision = tree["state"]["status_revision"]
-        self.click(f"test-prompt-answer-{0 if accept else 1}")
+        self.click(f"test-prompt-answer-{1 if accept else 0}")
         if not await_operation:
             return self.wait(lambda tree: not find(tree, "test-prompt"), "answered confirmation")
         self.wait(lambda tree: self.idle(tree) and not find(tree, "test-prompt"), "confirmation completion")
         return self.wait_completion(revision)
 
     def save_failure(self):
+        for name in ("window.png", "screenshot-error.txt"):
+            (self.artifacts / name).unlink(missing_ok=True)
         try:
             tree = self.tree()
         except BaseException:
@@ -270,7 +291,7 @@ class App:
                 (self.artifacts / "logs-view-tree.json").write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
                 import copy
                 log_window = copy.copy(self)
-                log_window.window_title = "Git Master Logs"
+                log_window.window_title = "Git Master · 操作日志"
                 x, y, width, height = log_window.window_geometry()
                 pyautogui.screenshot(region=(x, y, width, height)).save(self.artifacts / "logs-window.png")
         except Exception as error:

@@ -1,3 +1,4 @@
+use super::focus_visibility::KeyboardFocusStyle;
 use gpui::*;
 
 use super::theme;
@@ -6,6 +7,10 @@ use crate::log_viewer::{LogViewerHost, State, Viewer};
 
 pub struct LogsWindow {
     viewer: Viewer,
+    selected_row: Option<usize>,
+    file_notice: Option<String>,
+    buffer_banner_dismissed: bool,
+    selected_file: Option<std::path::PathBuf>,
     scroll: ListState,
     rows: std::sync::Arc<[String]>,
     tail_bounds: super::log_geometry::RowBounds,
@@ -52,12 +57,13 @@ impl GitMasterApp {
         if let Ok(mut tree) = provider.lock() {
             *tree = None;
         }
-        let bounds = Bounds::centered(None, size(px(1000.0), px(700.0)), cx);
+        let bounds = Bounds::centered(None, size(px(1440.0), px(1024.0)), cx);
         let result = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Git Master Logs".into()),
+                    title: Some("Git Master · 操作日志".into()),
+                    appears_transparent: cfg!(windows),
                     ..Default::default()
                 }),
                 focus: true,
@@ -85,6 +91,10 @@ impl GitMasterApp {
                     .detach();
                     let mut view = LogsWindow {
                         viewer: Viewer::new(),
+                        selected_row: None,
+                        file_notice: None,
+                        buffer_banner_dismissed: false,
+                        selected_file: None,
                         scroll: ListState::new(1, ListAlignment::Top, px(100.0)),
                         rows: vec![String::new()].into(),
                         tail_bounds: Default::default(),
@@ -138,7 +148,7 @@ impl GitMasterApp {
         );
         match result {
             Ok(handle) => self.log_window = Some(handle),
-            Err(error) => self.set_status(format!("Cannot open logs: {error}")),
+            Err(error) => self.set_failure(format!("Cannot open logs: {error}")),
         }
         cx.notify();
     }
@@ -190,10 +200,17 @@ impl LogsWindow {
         self.revision += 1;
         let revision = self.revision;
 
+        let selected = self.selected_file.clone();
         self.task = Some(cx.spawn(async move |entity, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async { LogViewerHost::load() })
+                .spawn(async move {
+                    if selected.is_none() {
+                        LogViewerHost::load()
+                    } else {
+                        LogViewerHost::load_file(selected)
+                    }
+                })
                 .await;
             entity
                 .update(cx, |this, cx| {
@@ -202,7 +219,20 @@ impl LogsWindow {
                     }
                     this.reading = false;
                     this.completed_reads += 1;
+                    if let (State::Ready(current), Ok(next)) = (&this.viewer.state, &result) {
+                        if current.path != next.path {
+                            this.file_notice = Some(if this.selected_file.is_none() {
+                                "日期切换，已读取当前日志文件".into()
+                            } else {
+                                "已切换日志文件".into()
+                            });
+                        }
+                    }
+                    let previous = this.viewer.pending.clone();
                     this.viewer.accept(result);
+                    if this.viewer.pending != previous {
+                        this.buffer_banner_dismissed = false;
+                    }
                     cx.notify();
                     if std::mem::take(&mut this.manual_requested) {
                         this.refresh(true, cx);
@@ -212,6 +242,31 @@ impl LogsWindow {
         }));
     }
 
+    fn choose_log_file(&mut self, cx: &mut Context<Self>) {
+        if self.reading {
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择日志文件".into()),
+        });
+        cx.spawn(async move |entity, cx| {
+            if let Ok(Ok(Some(paths))) = receiver.await {
+                if let Some(path) = paths.into_iter().next() {
+                    entity
+                        .update(cx, |this, cx| {
+                            this.selected_file = Some(path);
+                            this.viewer.resume();
+                            this.refresh(true, cx);
+                        })
+                        .ok();
+                }
+            }
+        })
+        .detach();
+    }
     fn track(&self, id: &str, element: impl IntoElement) -> AnyElement {
         #[cfg(feature = "test-rpc")]
         return crate::test_rpc::tracked::tracked(id, element, &self.bounds_registry)
@@ -226,48 +281,68 @@ impl LogsWindow {
     pub(crate) fn render_logs(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let state = &self.viewer.state;
         let copy = matches!(state, State::Ready(snapshot) if !snapshot.text.is_empty());
+        let file = match state {
+            State::Ready(s) => s
+                .path
+                .file_name()
+                .unwrap_or(s.path.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
+            _ => "选择日志文件".into(),
+        };
         let mut toolbar = div()
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .flex_wrap()
+            .gap(px(12.0))
             .flex_shrink_0()
+            .child(div().text_size(px(18.0)).child("日志文件"))
             .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(5.0))
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Application Logs"),
-                    )
-                    .children(match state {
-                        State::Ready(snapshot) => Some(
+                self.track(
+                    "logs-select",
+                    div()
+                        .id("logs-select")
+                        .flex_1()
+                        .min_w(px(280.0))
+                        .px(px(12.0))
+                        .py(px(9.0))
+                        .border_1()
+                        .border_color(rgb(theme::palette().border))
+                        .rounded(px(4.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(super::icons::icon("file", 20.0))
+                        .child(
                             div()
-                                .text_xs()
-                                .text_color(rgb(theme::TEXT_SUBTLE))
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(snapshot.path.display().to_string()),
-                        ),
-                        _ => None,
-                    }),
+                                .text_size(px(17.0))
+                                .child(file),
+                        )
+                        .child(super::icons::icon("chevron-down", 18.0))
+                        .focusable()
+                        .tab_stop(true)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_log_file(cx))),
+                ),
             );
         for (id, label, enabled) in [
             (
                 "logs-follow",
                 if self.viewer.following {
-                    "Pause follow"
+                    "暂停跟随"
                 } else {
-                    "Follow latest"
+                    "继续跟随"
                 },
                 true,
             ),
-            ("logs-refresh", "Refresh", true),
-            ("logs-copy", "Copy displayed", copy),
-            ("logs-close", "Close", true),
+            ("logs-today", "今日日志", !self.reading),
+            ("logs-refresh", "刷新", true),
+            ("logs-copy", "复制当前显示", copy),
         ] {
             toolbar = toolbar.child(
                 self.track(
@@ -277,13 +352,13 @@ impl LogsWindow {
                         .flex_shrink_0()
                         .px(px(12.0))
                         .py(px(7.0))
-                        .rounded(px(7.0))
-                        .bg(rgb(theme::BG_OVERLAY))
+                        .rounded(px(3.0))
+                        .bg(rgb(theme::palette().bg_overlay))
                         .text_sm()
                         .text_color(rgb(if enabled {
-                            theme::TEXT_PRIMARY
+                            theme::palette().text_primary
                         } else {
-                            theme::TEXT_MUTED
+                            theme::palette().text_muted
                         }))
                         .cursor(if enabled {
                             CursorStyle::PointingHand
@@ -302,6 +377,22 @@ impl LogsWindow {
                                 }
                                 cx.notify();
                             }
+                            "logs-today" if !this.reading => {
+                                this.selected_file = None;
+                                this.viewer.resume();
+                                this.refresh(true, cx);
+                            }
+                            "logs-directory" => {
+                                cx.background_executor()
+                                    .spawn(async {
+                                        if let Some(path) =
+                                            crate::operation_log::log_path().parent()
+                                        {
+                                            let _ = crate::desktop_actions::open(path, false);
+                                        }
+                                    })
+                                    .detach();
+                            }
                             "logs-refresh" => this.refresh(true, cx),
                             "logs-close" => window.remove_window(),
                             _ => {
@@ -318,17 +409,56 @@ impl LogsWindow {
             );
         }
         let (notice, color) = match state {
-            State::Loading => (None, theme::TEXT_SUBTLE),
-            State::Failed(_) => (None, theme::RED),
-            State::Ready(snapshot) => (snapshot.truncated.then_some(
-                "Showing the latest 2,000 lines, up to 256 KiB. Older entries remain in the log file."), theme::TEXT_SUBTLE),
+            State::Loading => (None, theme::palette().text_subtle),
+            State::Failed(_) => (None, theme::palette().red),
+            State::Ready(snapshot) => (
+                snapshot
+                    .truncated
+                    .then_some("已显示有界尾部：最近 2000 行 / 256 KiB · 完整文件保留在磁盘"),
+                theme::palette().text_subtle,
+            ),
         };
         let rows = self.rows.clone();
         let tail_bounds = self.tail_bounds.clone();
         #[cfg(feature = "test-rpc")]
         let registry = self.bounds_registry.clone();
+        let owner = cx.entity().downgrade();
+        let selected = self.selected_row;
         let content = list(self.scroll.clone(), move |index, _, _| {
-            let row = log_row(rows[index].clone());
+            let text = rows[index].clone();
+            let copied = text.clone();
+            let row_owner = owner.clone();
+            let row = div()
+                .id(ElementId::Name(format!("log-line-select-{index}").into()))
+                .relative()
+                .bg(rgb(if selected == Some(index) {
+                    theme::palette().accent_soft
+                } else {
+                    theme::palette().bg_base
+                }))
+                .child(log_row(text))
+                .on_click(move |_, _, cx| {
+                    row_owner
+                        .update(cx, |this, cx| {
+                            this.selected_row = Some(index);
+                            cx.notify();
+                        })
+                        .ok();
+                })
+                .children((selected == Some(index)).then(|| {
+                    div()
+                        .id(ElementId::Name(format!("log-line-copy-{index}").into()))
+                        .absolute()
+                        .right(px(4.0))
+                        .top_0()
+                        .px(px(5.0))
+                        .cursor_pointer()
+                        .child(super::icons::icon("copy", 18.0))
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                            cx.stop_propagation();
+                        })
+                }));
             let row = if index + 1 == rows.len() {
                 super::log_geometry::row_bounds(row, tail_bounds.clone()).into_any_element()
             } else {
@@ -356,9 +486,103 @@ impl LogsWindow {
                 .flex_1()
                 .min_w(px(0.0))
                 .min_h(px(0.0))
-                .p(px(20.0))
+                .p(px(16.0))
                 .gap(px(12.0))
                 .child(toolbar)
+                .child(
+                    div()
+                        .text_size(px(15.0))
+                        .text_color(rgb(theme::palette().text_subtle))
+                        .child(format!(
+                            "当前显示 {} 行 · 最多保留最近 2000 行 / 256 KiB · 完整文件保留在磁盘",
+                            match state {
+                                State::Ready(s) => s.text.lines().count(),
+                                _ => 0,
+                            }
+                        )),
+                )
+                .child({
+                    let buffered = !self.viewer.following
+                        && self.viewer.pending.is_some()
+                        && !self.buffer_banner_dismissed;
+                    let text = if let (State::Ready(current), Some(pending)) =
+                        (state, self.viewer.pending.as_ref())
+                    {
+                        pending
+                            .text
+                            .strip_prefix(&current.text)
+                            .map(|tail| {
+                                format!("有 {} 行新日志 · 继续跟随最新", tail.lines().count())
+                            })
+                            .unwrap_or_else(|| "日志尾部已更新 · 继续跟随最新".into())
+                    } else if self.viewer.following {
+                        self.file_notice
+                            .clone()
+                            .unwrap_or_else(|| "正在跟随最新日志".into())
+                    } else {
+                        "跟随已暂停 · 新日志将继续缓冲".into()
+                    };
+                    self.track(
+                        "logs-buffered-banner",
+                        div()
+                            .id("logs-buffered-banner")
+                            .h(px(48.0))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.0))
+                            .px(px(12.0))
+                            .border_1()
+                            .border_color(rgb(if buffered {
+                                theme::palette().yellow
+                            } else {
+                                theme::palette().border
+                            }))
+                            .bg(rgb(theme::palette().bg_elevated))
+                            .text_size(px(16.0))
+                            .text_color(rgb(if buffered {
+                                theme::palette().yellow
+                            } else {
+                                theme::palette().text_subtle
+                            }))
+                            .child(super::icons::icon(
+                                if self.viewer.following {
+                                    "player-play"
+                                } else {
+                                    "player-pause"
+                                },
+                                20.0,
+                            ))
+                            .child(div().flex_1().min_w_0().child(
+                                if self.buffer_banner_dismissed {
+                                    "跟随已暂停 · 新日志已缓冲".to_owned()
+                                } else {
+                                    text
+                                },
+                            ))
+                            .child(
+                                self.track(
+                                    "logs-banner-dismiss",
+                                    div()
+                                        .id("logs-banner-dismiss")
+                                        .cursor_pointer()
+                                        .child(super::icons::icon("x", 18.0))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.buffer_banner_dismissed = true;
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                            .focusable()
+                            .tab_stop(true)
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.viewer.resume();
+                                cx.notify();
+                            })),
+                    )
+                })
                 .child(
                     self.track(
                         if self.viewer.refresh_error.is_some() {
@@ -372,34 +596,34 @@ impl LogsWindow {
                             .text_xs()
                             .text_ellipsis()
                             .text_color(rgb(if self.viewer.refresh_error.is_some() {
-                                theme::RED
+                                theme::palette().red
                             } else if self.viewer.following {
-                                theme::GREEN
+                                theme::palette().green
                             } else {
-                                theme::YELLOW
+                                theme::palette().yellow
                             }))
                             .child(if let Some(error) = &self.viewer.refresh_error {
                                 format!(
-                                    "Auto refresh retrying · {} · {error}",
+                                    "读取失败，正在自动重试 · {} · {error}",
                                     if self.viewer.following {
-                                        "Following latest"
+                                        "正在跟随最新日志"
                                     } else {
-                                        "Follow paused"
+                                        "已暂停跟随"
                                     }
                                 )
                             } else if self.viewer.following {
-                                "Auto refresh: 1s · Following latest".into()
+                                "每秒自动读取 · 正在跟随最新日志".into()
                             } else if self.viewer.pending.is_some() {
-                                "Auto refresh: 1s · Follow paused · New logs available".into()
+                                "每秒自动读取 · 已暂停跟随 · 有新日志缓冲，点击继续跟随查看".into()
                             } else {
-                                "Auto refresh: 1s · Follow paused".into()
+                                "每秒自动读取 · 已暂停跟随".into()
                             }),
                     ),
                 )
                 .children(notice.map(|message| {
                     div()
                         .text_xs()
-                        .text_color(rgb(theme::YELLOW))
+                        .text_color(rgb(theme::palette().yellow))
                         .child(message)
                 }))
                 .child(
@@ -428,13 +652,75 @@ impl LogsWindow {
                             .flex()
                             .flex_col()
                             .p(px(14.0))
-                            .rounded(px(10.0))
+                            .rounded(px(3.0))
                             .border_1()
-                            .border_color(rgb(theme::BORDER))
-                            .bg(rgb(theme::BG_BASE))
+                            .border_color(rgb(theme::palette().border))
+                            .bg(rgb(theme::palette().bg_base))
                             .text_color(rgb(color))
                             .child(content),
                     ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .h(px(40.0))
+                        .border_t_1()
+                        .border_color(rgb(theme::palette().border))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(15.0))
+                                .child(if self.viewer.following {
+                                    "自动刷新每 1 秒 · 正在跟随最新日志"
+                                } else {
+                                    "自动刷新每 1 秒 · 已暂停跟随，仍在缓冲新日志"
+                                }),
+                        )
+                        .child(
+                            self.track(
+                                "logs-bottom",
+                                div()
+                                    .id("logs-bottom")
+                                    .px(px(12.0))
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .cursor_pointer()
+                                    .child("滚动到底部 / 继续跟随")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.viewer.resume();
+                                        cx.notify();
+                                    })),
+                            ),
+                        )
+                        .child(
+                            self.track(
+                                "logs-directory",
+                                div()
+                                    .id("logs-directory")
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .keyboard_focus(|s| {
+                                        s.border_1().border_color(rgb(theme::palette().accent))
+                                    })
+                                    .active(|s| s.bg(rgb(theme::palette().bg_overlay)))
+                                    .cursor_pointer()
+                                    .text_color(rgb(theme::palette().accent))
+                                    .child("打开日志目录")
+                                    .on_click(|_, _, cx| {
+                                        cx.background_executor()
+                                            .spawn(async {
+                                                if let Some(path) =
+                                                    crate::operation_log::log_path().parent()
+                                                {
+                                                    let _ =
+                                                        crate::desktop_actions::open(path, false);
+                                                }
+                                            })
+                                            .detach();
+                                    }),
+                            ),
+                        ),
                 ),
         )
         .into_any_element()
@@ -481,11 +767,112 @@ impl Render for LogsWindow {
             });
         }
         let panel = div()
+            .on_key_down(|event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    cx.stop_propagation();
+                }
+            })
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::BG_SURFACE))
-            .text_color(rgb(theme::TEXT_PRIMARY))
+            .bg(rgb(theme::palette().bg_surface))
+            .text_color(rgb(theme::palette().text_primary))
+            .font_family("Segoe UI")
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(48.0))
+                    .px(px(20.0))
+                    .gap(px(14.0))
+                    .border_b_1()
+                    .border_color(rgb(theme::palette().border))
+                    .child(super::icons::icon("git-branch", 24.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .window_control_area(WindowControlArea::Drag)
+                            .text_size(px(21.0))
+                            .child("Git Master · 操作日志"),
+                    )
+                    .children(
+                        [
+                            (theme::ThemeMode::Light, "浅色"),
+                            (theme::ThemeMode::Dark, "深色"),
+                        ]
+                        .into_iter()
+                        .map(|(mode, label)| {
+                            let id = format!("logs-theme-{}", mode.name());
+                            self.track(
+                                &id,
+                                div()
+                                    .id(ElementId::Name(id.clone().into()))
+                                    .p(px(8.0))
+                                    .focusable()
+                                    .tab_stop(true)
+                                    .keyboard_focus(|s| {
+                                        s.border_1().border_color(rgb(theme::palette().accent))
+                                    })
+                                    .active(|s| s.bg(rgb(theme::palette().bg_overlay)))
+                                    .cursor_pointer()
+                                    .border_b_2()
+                                    .border_color(rgb(if theme::mode() == mode {
+                                        theme::palette().accent
+                                    } else {
+                                        theme::palette().bg_surface
+                                    }))
+                                    .child(label)
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        theme::set_mode(mode);
+                                        let _ = crate::preferences::save_current();
+                                        cx.refresh_windows();
+                                    })),
+                            )
+                        }),
+                    )
+                    .children(
+                        [
+                            ("logs-minimize", "minus", WindowControlArea::Min),
+                            ("logs-maximize", "square", WindowControlArea::Max),
+                        ]
+                        .into_iter()
+                        .map(|(id, symbol, area)| {
+                            div()
+                                .id(id)
+                                .w(px(44.0))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|s| s.bg(rgb(theme::palette().bg_overlay)))
+                                .child(super::icons::icon(symbol, 20.0))
+                                .window_control_area(area)
+                        }),
+                    )
+                    .child(
+                        self.track(
+                            "logs-close",
+                            div()
+                                .id("logs-close")
+                                .w(px(44.0))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|s| s.bg(rgb(theme::palette().red)))
+                                .child(super::icons::icon("x", 22.0))
+                                .on_click(|_, window, _| window.remove_window()),
+                        ),
+                    ),
+            )
             .child(self.render_logs(cx));
         self.frame_revision += 1;
         let frame_revision = self.frame_revision;
@@ -504,7 +891,7 @@ impl Render for LogsWindow {
             active_read_manual: self.reading.then_some(self.active_read_manual),
             manual_queued: self.manual_requested,
         };
-        let panel = self.track("logs-root", panel);
+        let panel = self.track("logs-root", super::focus_visibility::track_input(panel));
         super::log_geometry::after_paint(panel, move |cx| {
             entity.update(cx, |this, cx| {
                 if this.frame_revision != frame_revision {
@@ -544,7 +931,7 @@ impl Render for LogsWindow {
                     this.pending_end_check = None;
                     let viewport = this.scroll.viewport_bounds();
                     if this.tail_bounds.get().is_some_and(|tail| {
-                        tail.bottom() >= viewport.top() + px(19.2)
+                        tail.bottom() >= viewport.top() + px(26.0)
                             && tail.bottom() <= viewport.bottom() + px(2.0)
                     }) {
                         this.viewer.resume();
@@ -558,8 +945,29 @@ impl Render for LogsWindow {
 }
 
 fn log_row(text: String) -> Div {
+    let mut highlights = Vec::new();
+    if let Some((timestamp, _)) = text.split_once(' ')
+        && chrono::DateTime::parse_from_rfc3339(timestamp).is_ok()
+    {
+        highlights.push((
+            0..timestamp.len(),
+            HighlightStyle {
+                color: Some(rgb(theme::palette().accent).into()),
+                ..Default::default()
+            },
+        ));
+    }
+    let error = text.contains("success=false")
+        || text.contains("fatal:")
+        || text.contains("ERROR")
+        || text.contains("exit=exit code: 128");
     div()
-        .min_h(px(19.2))
+        .text_color(rgb(if error {
+            theme::palette().red
+        } else {
+            theme::palette().text_primary
+        }))
+        .min_h(px(26.0))
         .flex_shrink_0()
         .font_family(if cfg!(windows) {
             "Consolas"
@@ -568,7 +976,7 @@ fn log_row(text: String) -> Div {
         } else {
             "monospace"
         })
-        .text_xs()
-        .line_height(px(19.2))
-        .child(text)
+        .text_size(px(16.0))
+        .line_height(px(26.0))
+        .child(StyledText::new(text).with_highlights(highlights))
 }

@@ -7,9 +7,11 @@ mod diff_preview;
 mod git_ops;
 mod history_host;
 mod log_viewer;
-mod modal_input;
+mod markdown;
 mod models;
 mod operation_log;
+mod preferences;
+mod preview_state;
 mod repo_actions;
 #[cfg(feature = "test-rpc")]
 mod test_rpc;
@@ -37,7 +39,10 @@ fn main() {
     if let Err(error) = operation_log::append("Application started") {
         eprintln!("Cannot initialize operation log: {error}");
     }
-    Application::new().run(|cx: &mut App| {
+    ui::theme::set_mode(preferences::load(&preferences::path()));
+    let recent_workspaces = preferences::recent_workspaces();
+    Application::new().with_assets(ui::icons::Icons).run(move |cx: &mut App| {
+        ui::text_input::init(cx);
         #[cfg(feature = "test-rpc")]
         let (tree_provider, logs_provider, command_queue) = {
             let provider = test_rpc::server::ViewTreeProvider::default();
@@ -53,11 +58,12 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
-                        size(px(1200.0), px(800.0)),
+                        size(px(1440.0), px(960.0)),
                         cx,
                     ))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Git Master".into()),
+                        appears_transparent: cfg!(windows),
                         ..Default::default()
                     }),
                     focus: true,
@@ -68,6 +74,8 @@ fn main() {
                     cx.new(|_cx| {
                         #[allow(unused_mut)]
                         let mut app = GitMasterApp::new();
+                        app.recent_workspaces=recent_workspaces.clone();
+                        app.start_workspace_polling(_cx);
                         #[cfg(feature = "test-rpc")]
                         {
                             app.tree_provider = tree_provider.clone();
@@ -80,23 +88,15 @@ fn main() {
             )
             .unwrap();
 
-        let entity = window.entity(cx).expect("Main window is available");
-        let modal_input = entity.read(cx).modal_input.clone();
-        #[cfg(feature = "test-rpc")]
-        let observation = {
-            test_rpc::prompt::Observation {
-                bounds: entity.read(cx).bounds_registry.clone(),
-                state: entity.read(cx).test_prompt.clone(),
-                owner: entity.downgrade(),
-            }
-        };
-        cx.set_prompt_builder(move |_, message, detail, answers, handle, window, cx| {
-            ui::confirmation::build(message, detail, answers, handle, window, cx, modal_input.clone(),
-                #[cfg(feature = "test-rpc")]
-                observation.clone(),
-            )
-        });
-
+        if let Ok(_entity) = window.entity(cx) {
+            #[cfg(feature = "test-rpc")]
+            let instrumentation = ui::confirmation::Instrumentation { bounds: _entity.read(cx).bounds_registry.clone(), state: _entity.read(cx).test_prompt.clone() };
+            #[cfg(not(feature = "test-rpc"))]
+            let instrumentation = ui::confirmation::Instrumentation::default();
+            cx.set_prompt_builder(move |level, message, detail, answers, handle, window, cx| {
+                ui::confirmation::build(level, message, detail, answers, handle, window, cx, instrumentation.clone())
+            });
+        }
         #[cfg(feature = "test-rpc")]
         {
             if let Ok(entity) = window.entity(cx) {

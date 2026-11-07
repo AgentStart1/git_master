@@ -44,7 +44,7 @@ pub fn append(message: &str) -> std::io::Result<()> {
 }
 
 // Remove HTTP URL credentials and query parameters from Git's diagnostic output.
-fn redact(message: &str) -> String {
+pub(crate) fn redact(message: &str) -> String {
     let mut output = String::new();
     for token in message.split_inclusive(char::is_whitespace) {
         if let Some(start) = token.find("://") {

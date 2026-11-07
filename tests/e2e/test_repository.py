@@ -20,6 +20,7 @@ def test_scan_selection_history_list_canvas_and_commit_details(app_factory, isol
     assert "●" in text(find(tree, "repo-1"))
     assert "Branch: dev" in text(find(tree, "repo-2"))
     app.select(0, alpha)
+    app.tab("info")
     assert "Branch: main" in text(find(app.tree(), "info-content"))
     app.tab("log")
     tree = app.wait(lambda tree: find(tree, "log-list"), "history list")
@@ -66,7 +67,7 @@ def test_submodule_placeholders_own_history_and_initialization(app_factory, isol
     canvas = find(tree, "commit-canvas")
     assert len([n for n in canvas["children"] if n["node_type"] == "group"]) == 2
     assert "Referenced commit not loaded" in text(canvas)
-    assert "(submodule)" in text(canvas) and "(head)" in text(canvas)
+    assert "(submodule)" in text(canvas) and "HEAD" in text(canvas)
     app.select(1, epsilon)
     app.tab("log")
     app.click("log-view-canvas")
@@ -93,6 +94,8 @@ def test_submodule_placeholders_own_history_and_initialization(app_factory, isol
     tree = app.wait(lambda tree: find(tree, "submodule-info-content"), "uninitialized details")
     assert "Status: Not initialized" in text(tree)
     app.click("init-submodule-btn")
+    app.wait(lambda tree: app.idle(tree) and "Submodule initialized" in text(tree), "submodule initialized")
+    app.tab("info")
     app.wait(lambda tree: app.idle(tree) and find(tree, "info-content"), "submodule initialized")
     assert git(delta / "modules" / "lib", "rev-parse", "HEAD").strip() == git(source, "rev-parse", "HEAD").strip()
 
@@ -113,14 +116,11 @@ def test_branch_checkout_and_unmerged_deletion_preserve_data(app_factory, isolat
     app.wait(lambda tree: app.idle(tree) and "failed" in status(tree).lower(), "checkout refuses overlapping changes")
     assert git(repo, "branch", "--show-current").strip() == "main"
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "unsaved main work\n"
+    app.click("blocked-close")
     app.click("log-delete-feature")
-    app.prompt(False)
-    assert git(repo, "rev-parse", "--verify", "feature").strip()
-    app.click("log-delete-feature")
-    app.click("test-prompt-answer-0")
-    tree = app.wait(lambda t: "Force delete local branch 'feature'?" in text(find(t, "test-prompt") or {}), "force delete confirmation")
-    assert "not fully merged" in text(find(tree, "test-prompt")).lower()
-    app.prompt(False)
+    tree = app.wait(lambda t: app.idle(t) and find(t, "blocked-context"), "unmerged deletion blocked")
+    assert "Branch deletion blocked" in status(tree)
+    assert not find(tree, "test-prompt")
     assert git(repo, "rev-parse", "--verify", "feature").strip()
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "unsaved main work\n"
 

@@ -13,24 +13,24 @@ pub fn render(rows: &[DiffRow], stash: bool) -> AnyElement {
     let mut pane = div()
         .id("worktree-diff")
         .flex_1()
+        .min_w_0()
         .min_h(px(0.0))
         .overflow_y_scroll()
         .overflow_x_scroll()
-        .border_1()
-        .border_color(rgb(theme::BORDER))
-        .rounded(px(10.0))
-        .bg(rgb(theme::BG_SURFACE));
+        .border_l_1()
+        .border_color(rgb(theme::palette().border))
+        .bg(rgb(theme::palette().bg_surface));
     if rows.is_empty() {
         return pane
             .child(
                 div()
                     .p(px(16.0))
-                    .text_sm()
-                    .text_color(rgb(theme::TEXT_SUBTLE))
+                    .text_size(px(16.0))
+                    .text_color(rgb(theme::palette().text_subtle))
                     .child(if stash {
-                        "Select a stash to view its saved changes."
+                        "选择一条暂存记录，查看保存的文件变更。"
                     } else {
-                        "Select Diff beside a file to view its changes."
+                        "选择左侧文件，审阅文件变更。"
                     }),
             )
             .into_any_element();
@@ -67,12 +67,17 @@ fn render_row(row: &DiffRow) -> AnyElement {
                 .px(px(12.0))
                 .py(px(7.0))
                 .mt(px(8.0))
-                .bg(rgb(theme::BG_ELEVATED))
+                .bg(rgb(theme::palette().bg_elevated))
                 .border_b_1()
-                .border_color(rgb(theme::BORDER))
-                .text_color(rgb(theme::TEXT_PRIMARY))
+                .border_color(rgb(theme::palette().border))
+                .text_color(rgb(theme::palette().text_primary))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(row.text.clone())
+                .child(match row.text.as_str() {
+                    "Staged" | "Staged changes" => "已暂存的变更".to_owned(),
+                    "Working tree" | "Working tree changes" => "工作区变更".to_owned(),
+                    "Untracked files" => "未跟踪文件".to_owned(),
+                    _ => row.text.clone(),
+                })
                 .into_any_element();
         }
         RowKind::File => {
@@ -80,16 +85,16 @@ fn render_row(row: &DiffRow) -> AnyElement {
                 .flex()
                 .items_center()
                 .py(px(6.0))
-                .bg(rgb(theme::BG_OVERLAY))
-                .text_color(rgb(theme::TEXT_PRIMARY))
+                .bg(rgb(theme::palette().bg_overlay))
+                .text_color(rgb(theme::palette().text_primary))
                 .child(
                     div()
                         .w(px(48.0))
                         .flex_shrink_0()
                         .text_center()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_SUBTLE))
-                        .child("OLD"),
+                        .text_color(rgb(theme::palette().text_subtle))
+                        .child("旧"),
                 )
                 .child(
                     div()
@@ -97,8 +102,8 @@ fn render_row(row: &DiffRow) -> AnyElement {
                         .flex_shrink_0()
                         .text_center()
                         .text_xs()
-                        .text_color(rgb(theme::TEXT_SUBTLE))
-                        .child("NEW"),
+                        .text_color(rgb(theme::palette().text_subtle))
+                        .child("新"),
                 )
                 .child(div().px(px(12.0)).child(row.text.clone()))
                 .into_any_element();
@@ -107,8 +112,8 @@ fn render_row(row: &DiffRow) -> AnyElement {
             return div()
                 .px(px(12.0))
                 .py(px(3.0))
-                .bg(rgb(theme::ACCENT_SOFT))
-                .text_color(rgb(theme::ACCENT))
+                .bg(rgb(theme::palette().accent_soft))
+                .text_color(rgb(theme::palette().accent))
                 .child(row.text.clone())
                 .into_any_element();
         }
@@ -116,19 +121,29 @@ fn render_row(row: &DiffRow) -> AnyElement {
             return div()
                 .px(px(12.0))
                 .py(px(2.0))
-                .text_color(rgb(theme::TEXT_SUBTLE))
+                .text_color(rgb(theme::palette().text_subtle))
                 .child(row.text.clone())
                 .into_any_element();
         }
         _ => {}
     }
     let (background, foreground, emphasis, sign) = match row.kind {
-        RowKind::Added => (0x122c25, 0xb4f0ce, 0x26563e, "+"),
-        RowKind::Removed => (0x321c28, 0xffbdca, 0x703247, "−"),
+        RowKind::Added => (
+            theme::palette().diff_added,
+            theme::palette().text_primary,
+            theme::palette().diff_added_word,
+            "+",
+        ),
+        RowKind::Removed => (
+            theme::palette().diff_removed,
+            theme::palette().text_primary,
+            theme::palette().diff_removed_word,
+            "−",
+        ),
         _ => (
-            theme::BG_SURFACE,
-            theme::TEXT_PRIMARY,
-            theme::BG_SURFACE,
+            theme::palette().bg_surface,
+            theme::palette().text_primary,
+            theme::palette().bg_surface,
             " ",
         ),
     };
@@ -173,9 +188,9 @@ fn gutter(number: Option<usize>) -> AnyElement {
         .flex_shrink_0()
         .pr(px(10.0))
         .text_right()
-        .text_color(rgb(theme::TEXT_SUBTLE))
+        .text_color(rgb(theme::palette().text_subtle))
         .border_r_1()
-        .border_color(rgb(theme::BORDER))
+        .border_color(rgb(theme::palette().border))
         .child(number.map(|n| n.to_string()).unwrap_or_default())
         .into_any_element()
 }

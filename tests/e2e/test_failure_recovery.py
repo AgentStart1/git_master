@@ -22,10 +22,10 @@ def test_failed_branch_delete_retains_visible_history_then_retry_succeeds(app_fa
     app.click("log-branch-feature")
     app.wait(lambda t: status(t) == "Git Log updated" and "Unmerged feature history" in text(find(t, "log-list") or {}))
     app.click("log-delete-feature")
-    app.click("test-prompt-answer-0")
-    tree = app.wait(lambda t: "Force delete local branch 'feature'?" in text(find(t, "test-prompt") or {}), "force delete confirmation")
-    assert "not fully merged" in text(find(tree, "test-prompt")).lower()
-    app.prompt(False)
+    tree = app.wait(lambda t: app.idle(t) and find(t, "blocked-context"), "unmerged deletion blocked")
+    assert "Branch deletion blocked" in status(tree)
+    assert not find(tree, "test-prompt")
+    app.click("blocked-close")
     assert git(repo, "rev-parse", "--verify", "feature").strip()
     assert "Unmerged feature history" in text(find(app.tree(), "log-list")), "failure must retain visible branch history"
     app.click("log-view-canvas")
@@ -37,27 +37,6 @@ def test_failed_branch_delete_retains_visible_history_then_retry_succeeds(app_fa
     app.prompt(True)
     assert status(app.tree()) == "Branch operation complete"
     assert git(repo, "show-ref", "--verify", "refs/heads/feature", check=False).returncode != 0
-
-
-@pytest.mark.p0
-def test_force_delete_requires_second_confirmation_and_preserves_worktree(app_factory, isolated_git):
-    root, repo = branching_repo(isolated_git)
-    (repo / "tracked.txt").write_text("unsaved main work\n", encoding="utf-8")
-    app = app_factory(root)
-    app.select(0, repo)
-    app.tab("log")
-    app.click("log-branch-feature")
-    app.wait(lambda t: status(t) == "Git Log updated")
-    app.click("log-delete-feature")
-    app.click("test-prompt-answer-0")
-    app.wait(lambda t: "Force delete local branch 'feature'?" in text(find(t, "test-prompt") or {}), "force delete confirmation")
-    assert git(repo, "rev-parse", "--verify", "feature").strip()
-    app.prompt(True)
-    assert status(app.tree()) == "Branch operation complete"
-    assert git(repo, "show-ref", "--verify", "refs/heads/feature", check=False).returncode != 0
-    assert git(repo, "branch", "--show-current").strip() == "main"
-    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "unsaved main work\n"
-    assert "Unmerged feature history" not in text(find(app.tree(), "log-list"))
 
 
 @pytest.mark.p1

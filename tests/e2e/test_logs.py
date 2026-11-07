@@ -13,7 +13,7 @@ def open_logs(app):
     app.click("open-logs-btn")
     logs = copy.copy(app)
     logs.window = None
-    logs.window_title = "Git Master Logs"
+    logs.window_title = "Git Master · 操作日志"
     def tree():
         value = app.rpc("get_logs_view_tree")
         logs.last_tree = value

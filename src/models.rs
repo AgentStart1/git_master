@@ -30,6 +30,10 @@ impl RemoteStatus {
 
 #[derive(Clone, Debug)]
 pub struct RepoDetail {
+    pub comparison_refs: Vec<(String, Option<(usize, usize)>)>,
+    pub upstream: Option<String>,
+    pub head_oid: Option<String>,
+    pub git_state: String,
     pub path: String,
     pub current_branch: String,
     pub branches: Vec<String>,
@@ -108,6 +112,7 @@ pub struct SubmoduleCommitLink {
 
 #[derive(Clone, Debug)]
 pub struct CommitGraph {
+    pub current_branch: String,
     pub repository_path: PathBuf,
     pub lanes: Vec<CommitLane>,
     pub submodule_links: Vec<SubmoduleCommitLink>,

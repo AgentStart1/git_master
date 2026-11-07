@@ -131,7 +131,9 @@ def test_batch_switch_continues_after_dirty_checkout_failure(app_factory, isolat
     original = git(blocked, "rev-parse", "HEAD").strip()
     (blocked / "tracked.txt").write_text("do not lose dirty work\n", encoding="utf-8")
     app = app_factory(root)
-    app.click("switch-all-main-btn")
+    app.click("switch-all-main-btn", await_operation=False)
+    if find(app.tree(), "repo-0") is not None:
+        app.prompt(True)
     app.wait(lambda t: app.idle(t) and "1 succeeded, 1 failed" in text(t), "partial batch completion")
     assert git(blocked, "rev-parse", "HEAD").strip() == original
     assert git(blocked, "branch", "--show-current").strip() == "feature"

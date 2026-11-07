@@ -1,3 +1,4 @@
+use super::canvas_paint::paint_edges;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -5,15 +6,14 @@ use gpui::*;
 
 use crate::app_state::GitMasterApp;
 use crate::git_ops;
-use crate::models::{CommitGraph, CommitLaneStatus, LogEntry, RepoInfo};
+use crate::models::{CommitLaneStatus, LogEntry, RepoInfo};
 use crate::ui::theme;
 
 pub const NODE_WIDTH: f32 = 236.0;
-pub const NODE_HEIGHT: f32 = 96.0;
-pub const LANE_SPACING: f32 = 550.0;
-const LANE_LEFT: f32 = 310.0;
-const FIRST_NODE_TOP: f32 = 92.0;
-const ROW_SPACING: f32 = 128.0;
+pub const NODE_HEIGHT: f32 = 64.0;
+pub const LANE_SPACING: f32 = 380.0;
+pub(super) use super::canvas_layout::branch_columns;
+pub use super::canvas_layout::build_layout;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CanvasPoint {
@@ -70,12 +70,12 @@ impl CanvasNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CanvasEdgeKind {
+    Reference,
     Parent,
     Submodule,
-    Head,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CanvasEdge {
     pub from: CanvasNodeId,
     pub to: CanvasNodeId,
@@ -119,7 +119,7 @@ pub struct CommitCanvasState {
 impl Default for CommitCanvasState {
     fn default() -> Self {
         Self {
-            pan: CanvasPoint::new(18.0, 16.0),
+            pan: CanvasPoint::new(0.0, 0.0),
             zoom: 1.0,
             node_positions: HashMap::new(),
             default_positions: HashMap::new(),
@@ -128,6 +128,25 @@ impl Default for CommitCanvasState {
 }
 
 impl CommitCanvasState {
+    pub fn fit_content(&mut self, layout: &CommitCanvasLayout, width: f32, height: f32) {
+        if layout.nodes.is_empty() {
+            return;
+        }
+        let mut minimum = CanvasPoint::new(f32::MAX, f32::MAX);
+        let mut maximum = CanvasPoint::new(f32::MIN, f32::MIN);
+        for node in &layout.nodes {
+            let p = self.position_for(node);
+            minimum.x = minimum.x.min(p.x);
+            minimum.y = minimum.y.min(p.y);
+            maximum.x = maximum.x.max(p.x + node.width);
+            maximum.y = maximum.y.max(p.y + node.height);
+        }
+        self.zoom = ((width - 48.0).max(1.0) / (maximum.x - minimum.x).max(1.0))
+            .min((height - 112.0).max(1.0) / (maximum.y - minimum.y).max(1.0))
+            .min(1.75);
+        self.pan = CanvasPoint::new(24.0 - minimum.x * self.zoom, 62.0 - minimum.y * self.zoom);
+    }
+
     pub fn ensure_layout(&mut self, layout: &CommitCanvasLayout) {
         for node in &layout.nodes {
             let old_default = self
@@ -201,257 +220,6 @@ pub fn load_layout_for_branches(
     })
 }
 
-pub fn build_layout(graph: &CommitGraph) -> CommitCanvasLayout {
-    let columns: HashMap<_, _> = graph
-        .lanes
-        .iter()
-        .map(|lane| (lane.id.clone(), branch_columns(&lane.entries)))
-        .collect();
-    let mut next_x = LANE_LEFT;
-    let lanes = graph
-        .lanes
-        .iter()
-        .map(|lane| {
-            let x = next_x;
-            next_x +=
-                (columns[&lane.id].iter().copied().max().unwrap_or(0) + 1) as f32 * LANE_SPACING;
-            CanvasLane {
-                id: lane.id.clone(),
-                name: lane.name.clone(),
-                relative_path: lane.relative_path.clone(),
-                status: lane.status.clone(),
-                x,
-            }
-        })
-        .collect::<Vec<_>>();
-    let lane_x = lanes
-        .iter()
-        .map(|lane| (lane.id.clone(), lane.x))
-        .collect::<HashMap<_, _>>();
-    let mut nodes = Vec::new();
-    let mut known_nodes = HashSet::new();
-    let mut head_edges = Vec::new();
-
-    for lane in &graph.lanes {
-        let x = lane_x.get(&lane.id).copied().unwrap_or(LANE_LEFT);
-        for (index, entry) in lane.entries.iter().enumerate() {
-            let commit_y = FIRST_NODE_TOP + index as f32 * ROW_SPACING;
-            let id = CanvasNodeId {
-                lane_id: lane.id.clone(),
-                commit_id: entry.full_hash.clone(),
-            };
-            let head_labels = (lane.id == "main")
-                .then(|| graph.head_labels.get(&entry.full_hash).cloned())
-                .flatten()
-                .unwrap_or_default();
-            if !head_labels.is_empty() {
-                let head_top = commit_y;
-                let head_height = head_node_height(head_labels.len());
-                let head_id = CanvasNodeId {
-                    lane_id: "heads".to_string(),
-                    commit_id: format!("head:{}", entry.full_hash),
-                };
-                nodes.push(CanvasNode {
-                    id: head_id.clone(),
-                    entry: None,
-                    head_labels,
-                    kind: CanvasNodeKind::Head,
-                    width: NODE_WIDTH,
-                    height: head_height,
-                    default_position: CanvasPoint::new(
-                        x + columns[&lane.id][index] as f32 * LANE_SPACING - NODE_WIDTH - 28.0,
-                        head_top,
-                    ),
-                });
-                head_edges.push(CanvasEdge {
-                    from: head_id,
-                    to: id.clone(),
-                    kind: CanvasEdgeKind::Head,
-                });
-            }
-            known_nodes.insert(id.clone());
-            nodes.push(CanvasNode {
-                id,
-                entry: Some(entry.clone()),
-                head_labels: Vec::new(),
-                kind: CanvasNodeKind::Commit,
-                width: NODE_WIDTH,
-                height: NODE_HEIGHT,
-                default_position: CanvasPoint::new(
-                    x + columns[&lane.id][index] as f32 * LANE_SPACING,
-                    commit_y,
-                ),
-            });
-        }
-    }
-
-    // HEAD cards are free nodes. Keep their initial positions near their commit,
-    // but move tall cards past neighbors rather than allocating a HEAD lane.
-    for index in 0..nodes.len() {
-        if !nodes[index].is_head() {
-            continue;
-        }
-        loop {
-            let node = &nodes[index];
-            let p = node.default_position;
-            let collision = nodes
-                .iter()
-                .enumerate()
-                .find(|(other_index, other)| {
-                    if *other_index == index || (other.is_head() && *other_index > index) {
-                        return false;
-                    }
-                    let q = other.default_position;
-                    p.x < q.x + other.width + 8.0
-                        && p.x + node.width + 8.0 > q.x
-                        && p.y < q.y + other.height + 8.0
-                        && p.y + node.height + 8.0 > q.y
-                })
-                .map(|(_, other)| other.default_position.y + other.height + 12.0);
-            match collision {
-                Some(y) => nodes[index].default_position.y = y,
-                None => break,
-            }
-        }
-    }
-    let default_positions = nodes
-        .iter()
-        .map(|node| (node.id.clone(), node.default_position))
-        .collect::<HashMap<_, _>>();
-    let mut edges = head_edges;
-    for lane in &graph.lanes {
-        for entry in &lane.entries {
-            let from = CanvasNodeId {
-                lane_id: lane.id.clone(),
-                commit_id: entry.full_hash.clone(),
-            };
-            for parent_hash in &entry.parent_hashes {
-                let to = CanvasNodeId {
-                    lane_id: lane.id.clone(),
-                    commit_id: parent_hash.clone(),
-                };
-                if known_nodes.contains(&to) {
-                    edges.push(CanvasEdge {
-                        from: from.clone(),
-                        to,
-                        kind: CanvasEdgeKind::Parent,
-                    });
-                }
-            }
-        }
-    }
-
-    for link in &graph.submodule_links {
-        let from = CanvasNodeId {
-            lane_id: "main".to_string(),
-            commit_id: link.main_commit.clone(),
-        };
-        if !known_nodes.contains(&from) {
-            continue;
-        }
-        let to = CanvasNodeId {
-            lane_id: link.submodule_lane.clone(),
-            commit_id: link.submodule_commit.clone(),
-        };
-        if !known_nodes.contains(&to) {
-            let Some(x) = lane_x.get(&link.submodule_lane).copied() else {
-                continue;
-            };
-            let source_y = default_positions
-                .get(&from)
-                .map(|position| position.y)
-                .unwrap_or(FIRST_NODE_TOP);
-            known_nodes.insert(to.clone());
-            nodes.push(CanvasNode {
-                id: to.clone(),
-                entry: None,
-                head_labels: Vec::new(),
-                kind: CanvasNodeKind::Placeholder,
-                width: NODE_WIDTH,
-                height: NODE_HEIGHT,
-                default_position: CanvasPoint::new(x, source_y),
-            });
-        }
-        edges.push(CanvasEdge {
-            from,
-            to,
-            kind: CanvasEdgeKind::Submodule,
-        });
-    }
-
-    CommitCanvasLayout {
-        history_limit: 200,
-        has_more: false,
-        repository_path: graph.repository_path.clone(),
-        lanes,
-        nodes,
-        edges,
-        list: crate::ui::log_list::LogListLayout::new(
-            graph
-                .lanes
-                .iter()
-                .find(|lane| lane.id == "main")
-                .map(|lane| lane.entries.as_slice())
-                .unwrap_or(&[]),
-        ),
-    }
-}
-
-fn head_node_height(label_count: usize) -> f32 {
-    // Extra space absorbs platform text line-height rounding and card padding.
-    62.0 + label_count as f32 * 30.0
-}
-
-/// Reserve separate columns for active ancestry paths, retaining the first
-/// parent's column and joining paths when they reach a shared ancestor.
-pub(super) fn branch_columns(entries: &[LogEntry]) -> Vec<usize> {
-    let mut active: Vec<Option<String>> = Vec::new();
-    let mut result = Vec::new();
-    for entry in entries {
-        let column = active
-            .iter()
-            .position(|id| id.as_deref() == Some(&entry.full_hash))
-            .unwrap_or_else(|| {
-                let free = active
-                    .iter()
-                    .position(Option::is_none)
-                    .unwrap_or(active.len());
-                if free == active.len() {
-                    active.push(None);
-                }
-                free
-            });
-        result.push(column);
-        active[column] = None;
-        for (index, parent) in entry.parent_hashes.iter().enumerate() {
-            if let Some(existing_column) = active.iter().position(|id| id.as_ref() == Some(parent))
-            {
-                // Lower-numbered columns represent the earlier (primary) path.
-                // Let a primary path reclaim a shared ancestor from a side path,
-                // but never let the side path steal it back afterward.
-                if index == 0 && column < existing_column {
-                    active[existing_column] = None;
-                    active[column] = Some(parent.clone());
-                }
-                continue;
-            }
-            let slot = if index == 0 {
-                column
-            } else {
-                active
-                    .iter()
-                    .position(Option::is_none)
-                    .unwrap_or(active.len())
-            };
-            if slot == active.len() {
-                active.push(None);
-            }
-            active[slot] = Some(parent.clone());
-        }
-    }
-    result
-}
-
 impl GitMasterApp {
     pub fn render_commit_canvas(&self, cx: &mut Context<'_, Self>) -> AnyElement {
         let Some(layout) = self.commit_canvas_layout.as_ref().cloned() else {
@@ -461,8 +229,8 @@ impl GitMasterApp {
                 .items_center()
                 .justify_center()
                 .text_sm()
-                .text_color(rgb(theme::TEXT_SUBTLE))
-                .child("Commit graph is unavailable.")
+                .text_color(rgb(theme::palette().text_subtle))
+                .child("暂无提交关系图")
                 .into_any_element();
         };
         let state = self
@@ -477,16 +245,36 @@ impl GitMasterApp {
             .iter()
             .map(|node| (node.id.clone(), state.position_for(node)))
             .collect::<HashMap<_, _>>();
-        let edge_positions = positions.clone();
-        let node_sizes = layout
+        let cards = layout
             .nodes
             .iter()
-            .map(|node| (node.id.clone(), (node.width, node.height)))
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    super::canvas_routes::CardRect::new(
+                        state.position_for(node),
+                        node.width,
+                        node.height,
+                    ),
+                )
+            })
             .collect::<HashMap<_, _>>();
+        let routes = self
+            .canvas_route_cache
+            .borrow_mut()
+            .routes(&layout.edges, cards);
+        let unloaded = layout
+            .nodes
+            .iter()
+            .filter(|n| n.is_placeholder())
+            .map(|n| n.id.clone())
+            .collect::<HashSet<_>>();
         let edges = layout.edges.clone();
         let paint_state = state.clone();
 
-        let auto_load = layout.has_more && self.history_host.can_auto_load();
+        // An overview fits loaded content; it must not immediately move its
+        // frontier by treating the entire visible history as a scroll-to-end.
+        let auto_load = layout.has_more && self.history_host.can_auto_load() && state.zoom >= 0.35;
         let frontier = layout
             .nodes
             .iter()
@@ -499,6 +287,51 @@ impl GitMasterApp {
         let edge_canvas = canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
+                let size = bounds.size;
+                let measure_entity = entity.clone();
+                cx.defer(move |cx| {
+                    measure_entity
+                        .update(cx, |this, cx| {
+                            this.canvas_viewport_size = Some(size);
+                            if std::mem::take(&mut this.canvas_reveal_selection)
+                                && let (Some((path, hash)), Some(layout)) =
+                                    (&this.selected_commit, &this.commit_canvas_layout)
+                            {
+                                if let Some(node) = layout.nodes.iter().find(|n| {
+                                    n.id.commit_id == *hash
+                                        && layout
+                                            .lanes
+                                            .iter()
+                                            .find(|l| l.id == n.id.lane_id)
+                                            .is_some_and(|l| {
+                                                layout.repository_path.join(
+                                                    l.relative_path
+                                                        .as_deref()
+                                                        .unwrap_or(std::path::Path::new("")),
+                                                ) == *path
+                                            })
+                                }) {
+                                    let state = this
+                                        .commit_canvas_states
+                                        .entry(layout.repository_path.clone())
+                                        .or_default();
+                                    let p = state.position_for(node);
+                                    let x = state.pan.x + p.x * state.zoom;
+                                    let y = state.pan.y + p.y * state.zoom;
+                                    let right =
+                                        (f32::from(size.width) - node.width * state.zoom - 18.0)
+                                            .max(18.0);
+                                    let bottom =
+                                        (f32::from(size.height) - node.height * state.zoom - 80.0)
+                                            .max(75.0);
+                                    state.pan.x += x.clamp(18.0, right) - x;
+                                    state.pan.y += y.clamp(75.0, bottom) - y;
+                                    cx.notify();
+                                }
+                            }
+                        })
+                        .ok();
+                });
                 if auto_load && frontier >= 0.0 && frontier <= f32::from(bounds.size.height) + 256.0
                 {
                     let entity = entity.clone();
@@ -518,99 +351,98 @@ impl GitMasterApp {
                             .ok();
                     });
                 }
-                paint_grid(bounds, &paint_state, window);
-                paint_edges(
-                    bounds,
-                    &paint_state,
-                    &edges,
-                    &edge_positions,
-                    &node_sizes,
-                    window,
-                );
+
+                paint_edges(bounds, &paint_state, &edges, &routes, &unloaded, window);
             },
         )
         .absolute()
         .size_full();
 
-        let lane_headers = layout.lanes.iter().map(|lane| {
-            let left = state.pan.x + lane.x * state.zoom;
-            let title = match lane.id.as_str() {
-                "main" => format!("MAIN  {}", lane.name),
-                "heads" => lane.name.clone(),
-                _ => format!("SUBMODULE  {}", lane.name),
+        let overview = state.zoom < 0.35;
+        let header_width = if overview {
+            ((self
+                .canvas_viewport_size
+                .map(|s| f32::from(s.width))
+                .unwrap_or(800.0)
+                - 48.0)
+                / layout.lanes.len().max(1) as f32)
+                .min(NODE_WIDTH)
+                .max(1.0)
+        } else {
+            NODE_WIDTH
+        };
+        let lane_headers = layout.lanes.iter().enumerate().map(|(index, lane)| {
+            let left = if overview {
+                24.0 + index as f32 * header_width
+            } else {
+                state.pan.x + lane.x * state.zoom
             };
+            let submodule_lane = lane.relative_path.is_some();
+            let title = lane.name.clone();
             let path = lane
                 .relative_path
                 .as_ref()
-                .map(|path| path.display().to_string());
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| layout.repository_path.display().to_string());
             let (status_text, status_color) = match lane.status {
-                CommitLaneStatus::Available => (None, rgb(theme::GREEN)),
-                CommitLaneStatus::Uninitialized => (Some("Not initialized"), rgb(theme::YELLOW)),
-                CommitLaneStatus::Unavailable => (Some("Repository unavailable"), rgb(theme::RED)),
+                CommitLaneStatus::Available => (None, rgb(theme::palette().green)),
+                CommitLaneStatus::Uninitialized => (Some("未初始化"), rgb(theme::palette().yellow)),
+                CommitLaneStatus::Unavailable => (Some("仓库不可用"), rgb(theme::palette().red)),
             };
 
             div()
+                .id(ElementId::Name(format!("canvas-lane-{}", lane.id).into()))
+                .tooltip(super::tooltip::text(path))
                 .absolute()
                 .left(px(left))
-                .top(px(state.pan.y + 14.0))
-                .w(px(NODE_WIDTH))
+                .top(px(if overview { 7.0 } else { state.pan.y + 14.0 }))
+                .w(px(header_width))
                 .px(px(10.0))
                 .py(px(7.0))
-                .rounded(px(5.0))
+                .rounded(px(3.0))
                 .border_1()
-                .border_color(rgb(theme::BG_OVERLAY))
-                .bg(rgb(theme::BG_SURFACE))
+                .border_color(rgb(theme::palette().bg_base))
+                .bg(rgb(theme::palette().bg_base))
                 .child(
                     div()
-                        .text_xs()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(super::icons::icon("folder", 20.0).flex_shrink_0())
+                        .text_size(px(18.0))
                         .text_color(if lane.id == "main" || lane.id == "heads" {
-                            rgb(theme::ACCENT)
+                            rgb(theme::palette().accent)
                         } else {
-                            rgb(theme::TEXT_SUBTLE)
+                            rgb(theme::palette().text_subtle)
                         })
-                        .child(title),
-                )
-                .children(path.map(|path| {
-                    div()
-                        .text_xs()
-                        .text_color(rgb(theme::TEXT_SUBTLE))
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(path)
-                }))
-                .children(
-                    status_text
-                        .map(|status| div().text_xs().text_color(status_color).child(status)),
-                )
-                .children((lane.status == CommitLaneStatus::Uninitialized).then(|| {
-                    let path = layout.repository_path.clone();
-                    let relative = lane.relative_path.clone();
-                    div()
-                        .id(ElementId::Name(format!("canvas-init-{}", lane.id).into()))
-                        .mt(px(6.0))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(4.0))
-                        .bg(rgb(theme::ACCENT))
-                        .text_color(rgb(theme::BG_BASE))
-                        .text_xs()
-                        .cursor_pointer()
-                        .child(if self.busy {
-                            "Working…"
-                        } else {
-                            "Initialize Submodule"
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_, _, _, cx| cx.stop_propagation()),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(title),
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(relative) = relative.clone() {
-                                this.init_canvas_submodule(path.clone(), relative, cx);
-                            }
-                            cx.stop_propagation();
-                        }))
+                        .children(
+                            (lane.status == CommitLaneStatus::Uninitialized && !overview)
+                                .then(|| self.render_canvas_initializer(&layout, lane, cx)),
+                        ),
+                )
+                .children((submodule_lane || status_text.is_some()).then(|| {
+                    div()
+                        .text_xs()
+                        .text_color(if status_text.is_some() {
+                            status_color
+                        } else {
+                            rgb(theme::palette().text_subtle)
+                        })
+                        .child(match (submodule_lane, status_text) {
+                            (true, Some(status)) => format!("子模块 · {status}"),
+                            (true, None) => "子模块".into(),
+                            (false, Some(status)) => status.into(),
+                            (false, None) => String::new(),
+                        })
                 }))
         });
 
@@ -637,74 +469,75 @@ impl GitMasterApp {
                 .unwrap_or(&node.id.commit_id)
                 .to_owned();
             let placeholder = node.is_placeholder();
+            let uninitialized = placeholder
+                && layout.lanes.iter().any(|lane| {
+                    lane.id == node.id.lane_id && lane.status == CommitLaneStatus::Uninitialized
+                });
             let is_head = node.is_head();
             let head_labels = node.head_labels.clone();
-            let border_color = if placeholder {
-                rgb(theme::YELLOW)
+            let selected = self
+                .selected_commit
+                .as_ref()
+                .is_some_and(|(path, hash)| path == &commit_path && hash == &commit_hash);
+            let border_color = if selected {
+                rgb(theme::palette().accent)
+            } else if placeholder {
+                rgb(theme::palette().yellow)
             } else if is_head {
-                rgb(theme::GREEN)
+                rgb(theme::palette().accent)
             } else if node.id.lane_id == "main" {
-                rgb(theme::ACCENT)
+                rgb(theme::palette().border)
             } else {
-                rgb(theme::BG_OVERLAY)
+                rgb(theme::palette().bg_overlay)
             };
 
             let content = if is_head {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.0 * state.zoom))
+                    .gap(px(2.0 * state.zoom))
                     .child(
                         div()
-                            .text_size(px(12.0 * state.zoom))
-                            .text_color(rgb(theme::GREEN))
-                            .child("HEAD"),
+                            .text_size(px(11.0 * state.zoom))
+                            .line_height(px(12.0 * state.zoom))
+                            .text_color(rgb(theme::palette().accent))
+                            .child(if head_labels.iter().any(|label| label == "HEAD") {
+                                "HEAD"
+                            } else {
+                                "分支引用"
+                            }),
                     )
-                    .child(div().flex().flex_col().gap(px(4.0 * state.zoom)).children(
-                        head_labels.iter().map(|label| {
-                            div()
-                                .px(px(5.0 * state.zoom))
-                                .py(px(2.0 * state.zoom))
-                                .rounded(px(3.0 * state.zoom))
-                                .bg(rgb(theme::ACCENT))
-                                .text_size(px(12.0 * state.zoom))
-                                .text_color(rgb(theme::BG_BASE))
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
-                                .child(label.clone())
-                        }),
-                    ))
+                    .child(
+                        div().flex().flex_col().gap(px(2.0 * state.zoom)).children(
+                            head_labels
+                                .iter()
+                                .filter(|label| label.as_str() != "HEAD")
+                                .map(|label| {
+                                    div()
+                                        .id(ElementId::Name(
+                                            format!("canvas-head-label-{label}").into(),
+                                        ))
+                                        .text_size(px(11.0 * state.zoom))
+                                        .line_height(px(14.0 * state.zoom))
+                                        .text_color(rgb(theme::palette().accent))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .tooltip(super::tooltip::text(label.clone()))
+                                        .child(label.clone())
+                                }),
+                        ),
+                    )
                     .into_any_element()
             } else if let Some(entry) = node.entry.as_ref() {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(3.0 * state.zoom))
+                    .gap(px(4.0 * state.zoom))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(7.0 * state.zoom))
-                            .child(
-                                div()
-                                    .text_size(px(12.0 * state.zoom))
-                                    .text_color(rgb(theme::YELLOW))
-                                    .child(entry.hash.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.0 * state.zoom))
-                                    .text_color(rgb(theme::TEXT_SUBTLE))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(entry.date.clone()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(14.0 * state.zoom))
+                            .text_size(px(17.0 * state.zoom))
+                            .line_height(px(22.0 * state.zoom))
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
@@ -712,12 +545,18 @@ impl GitMasterApp {
                     )
                     .child(
                         div()
-                            .text_size(px(12.0 * state.zoom))
-                            .text_color(rgb(theme::TEXT_SUBTLE))
+                            .text_size(px(14.0 * state.zoom))
+                            .line_height(px(20.0 * state.zoom))
+                            .text_color(rgb(theme::palette().text_subtle))
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .child(entry.author.clone()),
+                            .child(format!(
+                                "{} · {} · {}",
+                                entry.hash,
+                                entry.author,
+                                super::log_list::relative_date(&entry.date)
+                            )),
                     )
                     .into_any_element()
             } else {
@@ -727,14 +566,32 @@ impl GitMasterApp {
                     .gap(px(5.0 * state.zoom))
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0 * state.zoom))
                             .text_size(px(12.0 * state.zoom))
-                            .text_color(rgb(theme::YELLOW))
+                            .text_color(rgb(theme::palette().yellow))
+                            .child(
+                                super::icons::icon(
+                                    if uninitialized {
+                                        "alert-circle"
+                                    } else {
+                                        "info-circle"
+                                    },
+                                    16.0 * state.zoom,
+                                )
+                                .flex_shrink_0(),
+                            )
                             .child(node.short_hash().to_string()),
                     )
                     .child(
                         div()
                             .text_size(px(14.0 * state.zoom))
-                            .child("Referenced commit not loaded"),
+                            .child(if uninitialized {
+                                "子模块未初始化"
+                            } else {
+                                "引用的提交尚未加载"
+                            }),
                     )
                     .into_any_element()
             };
@@ -747,14 +604,16 @@ impl GitMasterApp {
                 .top(px(top))
                 .w(px(node.width * state.zoom))
                 .h(px(node.height * state.zoom))
-                .p(px(9.0 * state.zoom))
+                .p(px(if is_head { 5.0 } else { 9.0 } * state.zoom))
                 .rounded(px(6.0 * state.zoom))
                 .border(px(state.zoom))
                 .border_color(border_color)
-                .bg(if placeholder {
-                    rgba(0x25181825)
+                .bg(if selected {
+                    rgb(theme::palette().accent_soft)
+                } else if placeholder {
+                    rgb(theme::palette().bg_elevated)
                 } else {
-                    rgb(theme::BG_SURFACE)
+                    rgb(theme::palette().bg_surface)
                 })
                 .cursor_move()
                 .child(content)
@@ -784,27 +643,11 @@ impl GitMasterApp {
             .flex()
             .flex_grow()
             .overflow_hidden()
-            .bg(rgb(theme::BG_BASE))
+            .bg(rgb(theme::palette().bg_base))
             .cursor_move()
             .child(edge_canvas)
             .children(lane_headers)
             .children(nodes)
-            .child(
-                div()
-                    .absolute()
-                    .right(px(12.0))
-                    .bottom(px(10.0))
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .rounded(px(4.0))
-                    .bg(rgba(0xcc181825))
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_SUBTLE))
-                    .child(format!(
-                        "Drag nodes • Drag background to pan • Wheel to zoom  {}%",
-                        (state.zoom * 100.0).round() as i32
-                    )),
-            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _window, _cx| {
@@ -853,129 +696,6 @@ impl GitMasterApp {
 
 pub(super) fn canvas_point(point: Point<Pixels>) -> CanvasPoint {
     CanvasPoint::new(point.x.into(), point.y.into())
-}
-
-fn transformed_point(
-    bounds: Bounds<Pixels>,
-    state: &CommitCanvasState,
-    point: CanvasPoint,
-) -> Point<Pixels> {
-    gpui::point(
-        bounds.origin.x + px(state.pan.x + point.x * state.zoom),
-        bounds.origin.y + px(state.pan.y + point.y * state.zoom),
-    )
-}
-
-fn paint_grid(bounds: Bounds<Pixels>, state: &CommitCanvasState, window: &mut Window) {
-    let spacing = 32.0 * state.zoom;
-    let width: f32 = bounds.size.width.into();
-    let height: f32 = bounds.size.height.into();
-    let mut builder = PathBuilder::stroke(px(1.0));
-    let start_x = state.pan.x.rem_euclid(spacing);
-    let start_y = state.pan.y.rem_euclid(spacing);
-    let mut x = start_x;
-    while x <= width {
-        builder.move_to(gpui::point(bounds.origin.x + px(x), bounds.origin.y));
-        builder.line_to(gpui::point(
-            bounds.origin.x + px(x),
-            bounds.origin.y + bounds.size.height,
-        ));
-        x += spacing;
-    }
-    let mut y = start_y;
-    while y <= height {
-        builder.move_to(gpui::point(bounds.origin.x, bounds.origin.y + px(y)));
-        builder.line_to(gpui::point(
-            bounds.origin.x + bounds.size.width,
-            bounds.origin.y + px(y),
-        ));
-        y += spacing;
-    }
-    if let Ok(path) = builder.build() {
-        window.paint_path(path, rgba(0x18313244));
-    }
-}
-
-fn paint_edges(
-    bounds: Bounds<Pixels>,
-    state: &CommitCanvasState,
-    edges: &[CanvasEdge],
-    positions: &HashMap<CanvasNodeId, CanvasPoint>,
-    node_sizes: &HashMap<CanvasNodeId, (f32, f32)>,
-    window: &mut Window,
-) {
-    let mut parent_paths = PathBuilder::stroke(px(1.5));
-    let mut submodule_paths = PathBuilder::stroke(px(2.0)).dash_array(&[px(7.0), px(5.0)]);
-    let mut head_paths = PathBuilder::stroke(px(2.0));
-
-    for edge in edges {
-        let (Some(from), Some(to)) = (positions.get(&edge.from), positions.get(&edge.to)) else {
-            continue;
-        };
-        let (from_width, from_height) = node_sizes
-            .get(&edge.from)
-            .copied()
-            .unwrap_or((NODE_WIDTH, NODE_HEIGHT));
-        let (to_width, to_height) = node_sizes
-            .get(&edge.to)
-            .copied()
-            .unwrap_or((NODE_WIDTH, NODE_HEIGHT));
-        match edge.kind {
-            CanvasEdgeKind::Parent => {
-                let from_origin = transformed_point(bounds, state, *from);
-                let to_origin = transformed_point(bounds, state, *to);
-                let start = gpui::point(
-                    from_origin.x + px(from_width / 2.0 * state.zoom),
-                    from_origin.y + px(from_height * state.zoom),
-                );
-                let end = gpui::point(to_origin.x + px(to_width / 2.0 * state.zoom), to_origin.y);
-                let middle_y = start.y + (end.y - start.y) / 2.0;
-                parent_paths.move_to(start);
-                parent_paths.cubic_bezier_to(
-                    end,
-                    gpui::point(start.x, middle_y),
-                    gpui::point(end.x, middle_y),
-                );
-            }
-            CanvasEdgeKind::Submodule => {
-                let from_origin = transformed_point(bounds, state, *from);
-                let to_origin = transformed_point(bounds, state, *to);
-                let start = gpui::point(
-                    from_origin.x + px(from_width * state.zoom),
-                    from_origin.y + px(from_height / 2.0 * state.zoom),
-                );
-                let end = gpui::point(to_origin.x, to_origin.y + px(to_height / 2.0 * state.zoom));
-                let middle_x = start.x + (end.x - start.x) / 2.0;
-                submodule_paths.move_to(start);
-                submodule_paths.cubic_bezier_to(
-                    end,
-                    gpui::point(middle_x, start.y),
-                    gpui::point(middle_x, end.y),
-                );
-            }
-            CanvasEdgeKind::Head => {
-                let from_origin = transformed_point(bounds, state, *from);
-                let to_origin = transformed_point(bounds, state, *to);
-                let start = gpui::point(
-                    from_origin.x + px(from_width * state.zoom),
-                    from_origin.y + px(from_height / 2.0 * state.zoom),
-                );
-                let end = gpui::point(to_origin.x, to_origin.y + px(to_height / 2.0 * state.zoom));
-                head_paths.move_to(start);
-                head_paths.line_to(end);
-            }
-        }
-    }
-
-    if let Ok(path) = parent_paths.build() {
-        window.paint_path(path, rgb(theme::TEXT_SUBTLE));
-    }
-    if let Ok(path) = submodule_paths.build() {
-        window.paint_path(path, rgb(theme::YELLOW));
-    }
-    if let Ok(path) = head_paths.build() {
-        window.paint_path(path, rgb(theme::GREEN));
-    }
 }
 
 #[cfg(test)]

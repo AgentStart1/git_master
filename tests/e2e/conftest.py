@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def pytest_addoption(parser):
     parser.addoption("--app-binary", help="Prebuilt test-rpc executable; otherwise build once")
+    parser.addoption("--failing-difft-binary", help="Prebuilt failing diff fixture for runtime-only test environments")
     parser.addoption("--artifacts", default="test-results/e2e", help="Failure logs, view trees and window screenshots")
 
 
@@ -68,9 +69,14 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.fixture(scope="session")
-def failing_difft(tmp_path_factory):
+def failing_difft(tmp_path_factory, request):
     folder = tmp_path_factory.mktemp("failing-difft")
     program = folder / ("difft.exe" if sys.platform == "win32" else "difft")
-    subprocess.run(["rustc", "--edition=2024", str(ROOT / "tests/fixtures/difft_failure.rs"),
-        "-o", str(program)], check=True)
+    prebuilt = request.config.getoption("--failing-difft-binary")
+    if prebuilt:
+        import shutil
+        shutil.copyfile(Path(prebuilt).resolve(), program)
+    else:
+        subprocess.run(["rustc", "--edition=2024", str(ROOT / "tests/fixtures/difft_failure.rs"),
+            "-o", str(program)], check=True)
     return folder

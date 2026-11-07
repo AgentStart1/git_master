@@ -19,5 +19,39 @@ pub mod diff_view;
 mod log_geometry;
 pub mod log_viewer;
 
-pub mod confirmation;
 mod history_loading;
+
+pub(crate) mod branch_filter;
+pub mod text_input;
+pub(crate) mod workspace_controls;
+
+mod remote_controls;
+
+pub mod icons;
+
+mod overview;
+
+pub(crate) mod worktree_views;
+
+mod batch_results;
+
+mod canvas_layout;
+mod canvas_paint;
+pub(crate) mod canvas_routes;
+pub(crate) mod confirmation;
+
+pub(crate) mod blocked_action;
+
+pub(crate) mod state_views;
+
+pub(crate) mod tooltip;
+
+mod canvas_details;
+
+mod button_style;
+mod canvas_controls;
+
+pub(crate) mod focus_visibility;
+
+mod markdown;
+pub(crate) mod popup;

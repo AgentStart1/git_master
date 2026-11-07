@@ -65,6 +65,27 @@ impl DiffRenderer {
                 rows: vec![],
             });
         }
+        let file_names = diff
+            .deltas()
+            .filter(|d| selected(d, path))
+            .map(|d| {
+                let old = d.old_file();
+                let new = d.new_file();
+                if d.status() == git2::Delta::Renamed {
+                    format!(
+                        "{} → {}",
+                        old.path().unwrap_or(Path::new("")).display(),
+                        new.path().unwrap_or(Path::new("")).display()
+                    )
+                } else {
+                    new.path()
+                        .or_else(|| old.path())
+                        .unwrap_or(Path::new(""))
+                        .display()
+                        .to_string()
+                }
+            })
+            .collect::<Vec<_>>();
         if let Some(program) = &self.program {
             if let Ok(mut document) = self.render_difft(program, repo, &diff, workdir, path) {
                 document.text.insert_str(0, "Diff renderer: difft\n");
@@ -74,13 +95,15 @@ impl DiffRenderer {
                 "Diff renderer: Git (difft could not render this preview)\n{}",
                 unified(diff, path)?
             );
-            let rows = diff_model::from_unified(
+            let mut rows = diff_model::from_unified(
                 text.lines().skip(1).collect::<Vec<_>>().join("\n").as_str(),
             );
+            normalize_file_rows(&mut rows, &file_names);
             return Ok(RenderedDiff { text, rows });
         }
         let text = unified(diff, path)?;
-        let rows = diff_model::from_unified(&text);
+        let mut rows = diff_model::from_unified(&text);
+        normalize_file_rows(&mut rows, &file_names);
         Ok(RenderedDiff { text, rows })
     }
 
@@ -304,4 +327,14 @@ fn unified(diff: git2::Diff<'_>, path: Option<&Path>) -> Result<String, git2::Er
         text.push_str("No textual differences (file may be binary).\n");
     }
     Ok(text)
+}
+
+fn normalize_file_rows(rows: &mut [DiffRow], paths: &[String]) {
+    for (row, path) in rows
+        .iter_mut()
+        .filter(|row| row.kind == RowKind::File)
+        .zip(paths)
+    {
+        row.text = path.clone();
+    }
 }

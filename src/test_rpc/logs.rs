@@ -49,6 +49,8 @@ pub fn build_tree(
     }
     for (id, enabled) in [
         ("logs-close", true),
+        ("logs-theme-light", true),
+        ("logs-theme-dark", true),
         ("logs-follow", true),
         ("logs-refresh", true),
         (

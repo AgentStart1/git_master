@@ -129,7 +129,7 @@ cargo build --features test-rpc
 xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e --app-binary target/debug/git_master
 ```
 
-Use `--app-binary target/debug/git_master_e2e.exe` on Windows to reuse a prior dedicated build. Select only critical cases with `-m p0`, or core workflow cases with `-m p1`. Specify `tests/e2e` explicitly before custom options so pytest loads the suite's options. macOS desktop input and Wayland are not currently implemented by this driver.
+Use `--app-binary target/debug/git_master_e2e.exe` on Windows to reuse a prior dedicated build. Runtime-only desktop test environments may also pass `--failing-difft-binary PATH` with a fixture executable compiled from `tests/fixtures/difft_failure.rs` on the build machine; this avoids requiring a Rust compiler on the test desktop. Select only critical cases with `-m p0`, or core workflow cases with `-m p1`. Specify `tests/e2e` explicitly before custom options so pytest loads the suite's options. macOS desktop input and Wayland are not currently implemented by this driver.
 
 Tests use per-test temporary repositories, synthetic identities, disabled personal/system Git configuration, local-only remotes, and an individual loopback port. Each application process is terminated during fixture teardown. Timeouts poll observable conditions; they do not assume operations finish after a fixed sleep. Test code must not operate on a developer's repositories.
 
@@ -154,7 +154,7 @@ P0 means data integrity or explicit approval before a destructive action. P1 mea
 
 ### Coverage audit additions
 
-The suite now has 94 cases: 26 P0 and 68 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+The suite now has 99 cases: 26 P0 and 73 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
 
 | Priority | Previously missing workflow | Assertions |
 |---|---|---|
@@ -166,6 +166,7 @@ The suite now has 94 cases: 26 P0 and 68 P1. The audit compared the worktree act
 | P1 | Refresh, empty workspace and clean repository | Disabled batch actions are harmless; external changes update list, sidebar and Info; untracked-only stash preview hides empty sections |
 | P1 | Rename, binary and Unicode files | Preview is readable; Stage/Unstage preserves exact file bytes and correct index paths |
 | P1 | Branch visibility filter | List and graph reflect selection; last visible branch cannot be hidden; HEAD does not change |
+| P1 | Appearance and workspace filters | Light/Dark preserves selected history and commit details; preferences survive restart; repository search and status filters preserve selection |
 | P1 | Canvas click, node drag, pan and zoom | Click opens details; drag does not; geometry changes; per-repository view state survives switching |
 | P1 | Repository context menu / failed Fetch retry | Menu opens/dismisses without selecting the wrong repository; failure is visible and retry recovers |
 | P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
@@ -199,7 +200,7 @@ Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberat
 
 The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
 
-Confirmation dialogs use the same application renderer in production and test builds. The test build adds read-only button bounds and actual focused-button observations; it does not replace the renderer. Desktop cases verify safe default focus, Tab/Shift-Tab containment, Enter/Space activation, Escape cancellation, trigger-focus restoration, blocked background clicks, and visible buttons plus keyboard scrolling with lengthy diagnostics. A window-owned, UI-independent `ModalInputHost` tracks matching presses/releases and keeps release guards alive after the dialog closes and focus is restored. The root view and dialog route keyboard events through this same owner; the backdrop is not focusable and blocks all mouse buttons. State tests cover activation ownership and lifecycle transitions. Desktop regressions also cover held Enter/Space across cancellation, Alt+F4, backdrop mouse buttons, and focus changes during a held activation key. Native file/directory pickers and OS input permissions remain separate desktop integration checks. Screenshots on failure are diagnostics, not pixel-baseline visual regression tests.
+Operation confirmations use the same themed GPUI component in production and test builds. Test builds add bounds and state instrumentation so desktop tests can click the real Cancel/Confirm controls and exercise the approval callbacks. Destructive prompts start on Cancel and support Escape, Tab/arrows, Enter and Space. Structured risk fields and preview tables cross the toolkit's string prompt interface as JSON; native directory/file pickers remain separate. Screenshots and matching-state comparisons are required for visual acceptance.
 
 ## Failure artifacts and CI
 
@@ -239,6 +240,8 @@ Five geometry regressions exercise native window resizing, paused wrapped-row an
 
 Rename preview regressions cover both pure staged renames and renames with staged edits plus newer working-tree edits. They require both original and destination paths, removed old lines and added new lines, exclude a similarly named literal-path neighbor, and compare index entries, status and working bytes before/after preview. Both desktop cases fail on the pre-fix executable. Rust coverage also selects either rename path and exercises Git rendering, missing-difft fallback, and the installed renderer. Rename detection runs before literal path selection; difft preserves rename metadata even when file contents are identical.
 
+Changed-file badges use the corresponding index or working-tree status, independently of the aggregate file description. For example, a staged rename followed by a working edit shows R in Staged and M in Working; an added file with a later edit shows A and M. The mixed-status regression reads real repository statuses and verifies that preview does not change HEAD, index contents or working files.
+
 
 The rename review expands these cases to four renderer/content combinations. A native Rust fixture compiled once by rustc is detected as difft but returns malformed JSON during rendering; its invocation record proves both nonempty sections actually attempted difft before Git fallback. Section-specific assertions check exact old/new line numbers, then repeat previews after Stage and Unstage, verify index blob identity, restored source paths, unchanged working bytes, and hidden empty sections. The installed-difft Rust case now rejects silent fallback when difft is available. Mutation verification swaps the two rendered sections while keeping the combined text unchanged: the new edited-rename desktop case rejects the wrong staged old line. No production behavior changed in this review.
 
@@ -246,4 +249,24 @@ The rename review expands these cases to four renderer/content combinations. A n
 
 History limits apply separately to each selected local tip and matching remote tip, and to each submodule history. Each read probes one extra commit to detect exhaustion, merges by OID, and topologically orders only the selected union (child before parent, with time/OID tie breaking). Expansion raises each prefix by 200 and rebuilds on the background executor; it currently rereads the bounded prefixes rather than retaining libgit2 walkers between requests. Shared commits appear once.
 
-The toolkit-independent `HistoryHost` owns request generations and duplicate/cancelled completion handling. The GPUI adapter owns the cancellable task and validates repository, selection, branch filter, navigation revision, and prefix before publishing. Existing node defaults and saved user coordinates remain stable; new rows append below the old layout. Canvas proximity loading pauses after a failed read until an explicit retry. The toolbar exposes the same expansion for List and Canvas, and reports when all histories are exhausted.
+The toolkit-independent `HistoryHost` owns request generations and duplicate/cancelled completion handling. The GPUI adapter owns the cancellable task and validates repository, selection, branch filter, navigation revision, and prefix before publishing. Existing node defaults and saved user coordinates remain stable; new rows append below the old layout. Canvas proximity loading pauses after a failed read until an explicit retry. The toolbar exposes the same expansion for List and Canvas, and hides the expansion control when all histories are exhausted.
+
+## Navigator design verification
+
+`test_design_flows.py` covers overview navigation, keyboard branch filtering without checkout, retrying only failed batch remotes, cancelling the batch-switch preview, and read-only conflict preview with cancelled staging. Confirmation tests explicitly answer the prompt; actions that open a prompt must not wait for mutation completion before answering it. `test_appearance.py` verifies theme persistence and retained navigation/selection state.
+
+Modal keyboard checks must include both key-down and key-up. Confirmation and recovery cards respond to Enter/Space on key-up while consuming the event, so restored focus cannot activate the source button again. Test-only `GIT_MASTER_TEST_DETAIL_READ_GATE`, `GIT_MASTER_TEST_WORKTREE_READ_GATE`, and `GIT_MASTER_TEST_HISTORY_READ_GATE` hold actual background reads for pending/refresh/append screenshots using the same bounded gate and `finally` release contract; they do not synthesize repository data or delay production builds.
+
+Standard non-modal primary actions share `ui::button_style::primary`: opaque text with paired normal/pressed fills, a contrasting focus ring, and an explicit disabled appearance/reason. The brighter link/status accent is not a white-label button fill. Keep text color fixed while hovering; GPUI shapes inherited text before hover painting.
+
+Branch popovers use persistent focus handles on their visible triggers. Closing a popover returns focus to its trigger before removing the focused menu/search subtree, so Escape, Ctrl+K and subsequent Tab navigation remain usable. Checkout and delete actions use the same close path before starting background work or opening a confirmation.
+
+Conflict previews run on the worktree worker. The current file is limited to 256 KiB / 600 lines; the independent stage-2 and stage-3 index contents are each limited to 128 KiB / 600 lines. They use bounded read-only rows and never infer resolution from marker absence. Binary files receive an external-tool notice; symlink previews read the link target text rather than following the link. Previewing and cancelling resolution leave the unmerged index and file bytes intact. Stash preview line counts describe the bounded rendered partitions, not an independent full-repository numstat.
+
+The root `design-qa.md` records desktop visual comparisons and the scoped test runs for this redesign. Captures and JUnit files are local ignored artifacts under `test-results/navigator/`; they are not shipped with the application. The native desktop build is the implementation target, so browser console and CSS viewport checks do not apply.
+
+Stash Pop is implemented as application followed by an explicit unmerged-index check and only then deletion of the same stash identity. libgit2 may return success after producing conflicts, so its return value alone must never authorize dropping the record. The regression fixture checks the actual unmerged index and retained stash OID.
+
+Canvas connections attach directly to rounded card boundaries: parent bottom to parent top, and gray dashed gitlink right to left. The toolkit-independent rectilinear router avoids other cards and reference labels, retaining every Git parent edge, including merges. HEAD is a compact nearby reference label with no graph edge of its own. Unloaded parent continuations use blue dashed strokes. Routing regressions cover merge parents, reversed dragged positions and reference-label obstacles; desktop verification additionally checks the painted endpoints and absence of external dots/ports/timelines.
+
+Canvas placeholder placement reserves an unoccupied row for each distinct unloaded OID, including parent frontiers and module references. A missing reference never replaces or covers an already-loaded commit at the source row. The append stabilizer preserves these distinct card positions when placeholders become real commits.

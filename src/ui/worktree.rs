@@ -1,3 +1,4 @@
+use super::focus_visibility::KeyboardFocusStyle;
 use super::theme;
 use crate::app_state::GitMasterApp;
 use crate::worktree::{Action, WorktreeHost};
@@ -24,16 +25,54 @@ impl GitMasterApp {
         if (self.busy && mutating) || self.loading_detail {
             return;
         }
-        let Some((index, root, path, selection, _)) = self.selected_remote_action_target() else {
+        let Some((_, root, path, _, _)) = self.selected_remote_action_target() else {
             return;
         };
+        let operation_target = super::blocked_action::OperationTarget {
+            path: path.clone(),
+            branch: self
+                .detail
+                .as_ref()
+                .map(|d| d.current_branch.clone())
+                .unwrap_or_default(),
+        };
+        let failed_action = action.clone();
         let refresh_metadata = mutating || matches!(action, Action::Refresh);
+        let action = if matches!(action, Action::Refresh) {
+            match (
+                self.worktree_preview.request().map(|r| &r.target),
+                self.active_tab,
+            ) {
+                (
+                    Some(crate::preview_state::PreviewTarget::Stash(oid)),
+                    crate::app_state::DetailTab::GitStash,
+                ) => Action::ShowStash(*oid),
+                (
+                    Some(crate::preview_state::PreviewTarget::File(file)),
+                    crate::app_state::DetailTab::GitChange,
+                ) => Action::Diff(file.clone()),
+                _ => action,
+            }
+        } else {
+            action
+        };
         if mutating && self.worktree_loading {
             return;
         }
         self.worktree_task = None;
         self.worktree_revision += 1;
         let revision = self.worktree_revision;
+        let preview_request = match &action {
+            Action::Diff(file) => Some(crate::preview_state::PreviewTarget::File(file.clone())),
+            Action::ShowStash(oid) => Some(crate::preview_state::PreviewTarget::Stash(*oid)),
+            _ => None,
+        }
+        .map(|target| crate::preview_state::PreviewRequest {
+            repository: path.clone(),
+            target,
+            revision,
+        });
+        self.worktree_preview.begin(preview_request.clone());
         self.worktree_loading = true;
         // Concurrent reads must preserve a running mutation's progress and outcome.
         if report_status {
@@ -42,7 +81,13 @@ impl GitMasterApp {
         if mutating {
             self.busy = true;
         }
-        self.worktree = Some((path.clone(), Ok(Default::default())));
+        if self
+            .worktree
+            .as_ref()
+            .is_none_or(|(current, _)| current != &path)
+        {
+            self.worktree = Some((path.clone(), Ok(Default::default())));
+        }
         cx.notify();
         let task = cx.spawn(async move |entity, cx| {
             let target = path.clone();
@@ -68,7 +113,7 @@ impl GitMasterApp {
                 .update(cx, |this, cx| {
                     let owns_request = this.owns_worktree_request(revision)
                         && this.selected_remote_action_target().is_some_and(
-                            |(_, _, current, selected, _)| current == path && selected == selection,
+                            |(_, _, current, _, _)| current == path,
                         );
                     if !mutating && !owns_request {
                         return;
@@ -77,10 +122,28 @@ impl GitMasterApp {
                         this.busy = false;
                     }
                     if refresh_metadata {
-                        this.apply_repo_refresh(index, &root, refreshed);
+                        this.apply_repo_refresh(&root, refreshed);
                     }
                     if owns_request {
                         this.worktree_loading = false;
+                        if mutating && let Err(error) = &result {
+                            let (title, guidance, recovery) = match &failed_action {
+                                Action::Pop(oid) => {
+                                    let retained=snapshot.as_ref().ok().is_some_and(|s|s.stashes.iter().any(|e|e.oid==*oid));
+                                    let conflicts=snapshot.as_ref().ok().map(|s|s.changes.iter().filter(|e|e.status.contains("Conflicted")).count()).unwrap_or(0);
+                                    (if conflicts>0 {"应用暂存记录时发生冲突"}else{"应用暂存记录受阻"},format!("记录 {oid}：{}。{conflicts} 个冲突文件需要处理。已应用的部分可能仍在工作区，请查看实际状态后在外部处理并刷新。",if retained {"已保留，未删除"}else{"当前列表中无法确认，请刷新核对"}),super::blocked_action::Recovery::Changes)
+                                },
+                                Action::SaveStash => ("无法保存当前修改", "请在终端核对 Git 用户身份及错误原因，配置后重试。".into(), super::blocked_action::Recovery::Terminal(path.clone())),
+                                _ => ("Git 操作受阻", "保留当前内容，请查看实际变更后重试。".into(), super::blocked_action::Recovery::Changes),
+                            };
+                            this.show_blocked(operation_target,title,error.clone(),guidance,recovery);
+                        }
+                        if let Some(request) = preview_request {
+                            let preview = snapshot.clone().and_then(|s| match &s.preview_error {
+                                Some(error) => Err(error.clone()), None => Ok(s),
+                            });
+                            this.worktree_preview.finish(request, preview);
+                        }
                         this.worktree = Some((path, snapshot));
                         if refresh_metadata {
                             this.detail = detail;
@@ -93,15 +156,17 @@ impl GitMasterApp {
                                     "Repository changes and stashes refreshed"
                                 }),
                                 Err(error) => {
-                                    this.set_status(format!("Git operation failed: {error}"))
+                                    this.set_failure(format!("Git operation failed: {error}"))
                                 }
                             }
                         }
                     } else if mutating {
+                        let failed=result.is_err();
                         this.set_status(match result {
                             Ok(()) => "Git operation complete".to_string(),
                             Err(error) => format!("Git operation failed: {error}"),
                         });
+                        if failed {this.status_outcome=crate::app_state::TaskOutcome::Failure;}
                         this.refresh_visible_worktree(cx);
                     }
                     cx.notify();
@@ -124,90 +189,186 @@ impl GitMasterApp {
         if self.busy || self.worktree_loading {
             return;
         }
-        let Some((_, _, path, selection, _)) = self.selected_remote_action_target() else {
+        let Some((_, _, path, _selection, _)) = self.selected_remote_action_target() else {
             return;
         };
+        let record = self
+            .worktree
+            .as_ref()
+            .and_then(|(_, r)| r.as_ref().ok())
+            .and_then(|s| s.stashes.iter().find(|e| e.oid == oid));
+        let title = record
+            .map(|e| format!("删除 stash@{{{}}}？", e.index))
+            .unwrap_or_else(|| "删除暂存记录？".into());
+        let description = super::confirmation::details(
+            "trash",
+            vec![
+                (
+                    "记录",
+                    record
+                        .map(|e| e.message.clone())
+                        .unwrap_or_else(|| oid.to_string()),
+                ),
+                ("提交", oid.to_string()),
+            ],
+            vec!["删除后无法从暂存记录列表恢复，当前工作区不变。".into()],
+            None,
+            vec![],
+        );
         self.busy = true;
         self.set_status("Confirm stash deletion…");
         cx.notify();
         let entity = cx.entity().downgrade();
         self.remote_action_prompt_task = Some(window.spawn(cx, async move |cx| {
-            let answer = cx.prompt(PromptLevel::Critical, "Delete this stash?", Some("The saved changes will be removed from the stash list. This cannot be undone from Git Master."), &[PromptButton::ok("Delete stash"), PromptButton::cancel("Cancel")]).await;
-            entity.update(cx, |this, cx| {
-                this.busy = false;
-                if answer == Ok(0) && this.selected_remote_action_target().is_some_and(|(_, _, current, selected, _)| current == path && selected == selection) {
-                    this.run_worktree(Action::Drop(oid), cx);
-                } else {
-                    this.set_status("Stash deletion cancelled");
-                }
-                cx.notify();
-            }).ok();
+            let answer = cx
+                .prompt(
+                    PromptLevel::Critical,
+                    &title,
+                    Some(&description),
+                    &[
+                        PromptButton::cancel("取消"),
+                        PromptButton::ok("删除暂存记录"),
+                    ],
+                )
+                .await;
+            entity
+                .update(cx, |this, cx| {
+                    this.busy = false;
+                    if answer == Ok(1)
+                        && this
+                            .selected_remote_action_target()
+                            .is_some_and(|(_, _, current, _, _)| current == path)
+                    {
+                        this.run_worktree(Action::Drop(oid), cx);
+                    } else {
+                        this.set_skipped("Stash deletion cancelled");
+                    }
+                    cx.notify();
+                })
+                .ok();
         }));
     }
 
-    fn worktree_button(
+    fn confirm_stage_conflict(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let expected = self
+            .selected_remote_action_target()
+            .map(|(_, _, path, _, _)| path);
+        self.busy = true;
+        let entity = cx.entity().downgrade();
+        cx.notify();
+        self.remote_action_prompt_task=Some(window.spawn(cx,async move|cx|{
+            let answer=cx.prompt(PromptLevel::Warning,"确认已在外部解决冲突？",Some(&format!("文件：{}\n将当前文件内容写入暂存区。此操作不会自动合并，也不会根据冲突标记的有无判断解决结果。请确认已检查并保存正确内容。",path.display())),&[PromptButton::cancel("取消"),PromptButton::ok("确认并暂存")]).await;
+            entity.update(cx,|this,cx|{this.busy=false;if answer==Ok(1)&&this.selected_remote_action_target().map(|(_,_,path,_,_)|path)==expected {this.run_worktree(Action::Stage(path),cx);}else{this.set_skipped("已取消标记解决");}cx.notify();}).ok();
+        }));
+    }
+
+    pub(super) fn worktree_button(
         &self,
         id: String,
         label: &str,
         action: Action,
         cx: &mut Context<'_, Self>,
     ) -> AnyElement {
-        let disabled = self.busy || self.worktree_loading || self.loading_detail;
+        let nothing_to_save = matches!(action, Action::SaveStash)
+            && self
+                .worktree
+                .as_ref()
+                .and_then(|(_, r)| r.as_ref().ok())
+                .is_some_and(|s| s.changes.is_empty());
+        let disabled = self.busy || self.worktree_loading || self.loading_detail || nothing_to_save;
         let heading = id.starts_with("stash-select-");
         let primary = matches!(action, Action::SaveStash | Action::Stage(_));
         let danger = matches!(action, Action::Drop(_));
         let background = if heading {
-            theme::BG_SURFACE
+            theme::palette().bg_base
         } else if primary && !disabled {
-            theme::ACCENT
+            theme::palette().accent_fill
         } else {
-            theme::BG_ELEVATED
+            theme::palette().bg_elevated
         };
         let foreground = if disabled {
-            theme::TEXT_MUTED
+            theme::palette().text_muted
         } else if primary {
-            theme::BG_BASE
+            0xffffff
         } else if danger {
-            theme::RED
+            theme::palette().red
         } else {
-            theme::TEXT_PRIMARY
+            theme::palette().text_primary
         };
         let button = div()
             .id(ElementId::Name(id.clone().into()))
-            .when(danger, |button| button.focusable())
             .px(px(if heading { 0.0 } else { 11.0 }))
             .py(px(if heading { 0.0 } else { 6.0 }))
-            .rounded(px(7.0))
+            .rounded(px(3.0))
             .border_1()
             .border_color(rgb(if heading {
-                theme::BG_SURFACE
+                theme::palette().bg_surface
             } else if primary && !disabled {
-                theme::ACCENT
+                theme::palette().accent
             } else {
-                theme::BORDER
+                theme::palette().border
             }))
             .bg(rgb(background))
             .text_color(rgb(foreground))
-            .text_xs()
+            .text_size(px(15.0))
             .when(heading, |button| {
-                button.text_sm().font_weight(FontWeight::SEMIBOLD)
+                button
+                    .text_size(px(17.0))
+                    .bg(rgba(0x00000000))
+                    .border_color(rgba(0x00000000))
+                    .font_weight(FontWeight::MEDIUM)
             })
             .child(label.to_owned())
+            .when(disabled, |s| {
+                s.tooltip(super::tooltip::text(if nothing_to_save {
+                    "当前没有可保存的修改"
+                } else {
+                    "当前操作尚未完成，请稍候"
+                }))
+            })
             .when(!disabled, |button| {
                 button
+                    .focusable()
+                    .tab_stop(true)
                     .cursor_pointer()
-                    .hover(|style| {
-                        style.bg(rgb(if heading {
-                            theme::BG_ELEVATED
-                        } else if primary {
-                            0x8bbaff
-                        } else {
-                            theme::BG_OVERLAY
-                        }))
+                    .when(primary, |button| super::button_style::primary(button, true))
+                    .when(!primary, |button| {
+                        button
+                            .keyboard_focus(|s| {
+                                s.border_1().border_color(rgb(theme::palette().accent))
+                            })
+                            .active(|s| s.bg(rgb(theme::palette().bg_overlay)))
+                            .hover(|s| {
+                                s.bg(rgb(if heading {
+                                    theme::palette().bg_elevated
+                                } else {
+                                    theme::palette().bg_overlay
+                                }))
+                            })
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Action::Drop(oid) = action {
                             this.confirm_drop_stash(oid, window, cx);
+                        } else if let Action::Stage(path) = &action {
+                            if this
+                                .worktree
+                                .as_ref()
+                                .and_then(|(_, r)| r.as_ref().ok())
+                                .is_some_and(|snapshot| {
+                                    snapshot.changes.iter().any(|entry| {
+                                        entry.path == *path && entry.status.contains("Conflicted")
+                                    })
+                                })
+                            {
+                                this.confirm_stage_conflict(path.clone(), window, cx);
+                            } else {
+                                this.run_worktree(action.clone(), cx);
+                            }
                         } else {
                             this.run_worktree(action.clone(), cx);
                         }
@@ -215,343 +376,4 @@ impl GitMasterApp {
             });
         self.track(&id, button)
     }
-
-    pub(super) fn render_worktree_tab(
-        &self,
-        stash: bool,
-        cx: &mut Context<'_, Self>,
-    ) -> AnyElement {
-        let current_path = self
-            .selected_remote_action_target()
-            .map(|(_, _, path, _, _)| path);
-        let data = self
-            .worktree
-            .as_ref()
-            .filter(|(path, _)| Some(path) == current_path.as_ref());
-        let snapshot = data.and_then(|(_, result)| result.as_ref().ok());
-        let count = snapshot.filter(|_| !self.worktree_loading).map(|data| {
-            if stash {
-                data.stashes.len()
-            } else {
-                data.changes.len()
-            }
-        });
-        let mut toolbar = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(10.0))
-            .p(px(16.0))
-            .bg(rgb(theme::BG_SURFACE))
-            .border_1()
-            .border_color(rgb(theme::BORDER))
-            .rounded(px(10.0))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(180.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(5.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(10.0))
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(if stash { "Git Stash" } else { "Git Change" }),
-                            )
-                            .children(count.map(|count| {
-                                badge(
-                                    &format!(
-                                        "{count} {}",
-                                        if stash {
-                                            "saved"
-                                        } else if count == 1 {
-                                            "file"
-                                        } else {
-                                            "files"
-                                        }
-                                    ),
-                                    theme::ACCENT,
-                                )
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_SUBTLE))
-                            .child(if stash {
-                                "Save and restore staged, working-tree and untracked changes."
-                            } else {
-                                "Review file changes and manage the staging area."
-                            }),
-                    ),
-            )
-            .child(self.worktree_button("worktree-refresh".into(), "Refresh", Action::Refresh, cx));
-        if stash {
-            toolbar = toolbar.child(self.worktree_button(
-                "stash-save".into(),
-                "Save stash",
-                Action::SaveStash,
-                cx,
-            ));
-        }
-        let body = div()
-            .id("worktree-content")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h(px(0.0))
-            .gap(px(12.0))
-            .p(px(20.0))
-            .child(toolbar);
-        if self.worktree_loading {
-            return body
-                .child(state_card(
-                    "Reading repository",
-                    "Loading file changes and saved stashes…",
-                    theme::ACCENT,
-                ))
-                .into_any_element();
-        }
-        let Some((_, result)) = data else {
-            return body
-                .child(state_card(
-                    "Ready to review",
-                    "Refresh to load this repository's changes and stashes.",
-                    theme::ACCENT,
-                ))
-                .into_any_element();
-        };
-        let snapshot = match result {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return body
-                    .child(state_card("Cannot load repository", error, theme::RED))
-                    .into_any_element();
-            }
-        };
-        let mut list = div()
-            .id("worktree-list")
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .max_h(px(240.0))
-            .overflow_y_scroll();
-        if stash {
-            if snapshot.stashes.is_empty() {
-                return body.child(state_card("No saved stashes", "Use Save stash to set aside your current changes, including untracked files.", theme::ACCENT)).into_any_element();
-            }
-            for entry in &snapshot.stashes {
-                let id = entry.oid;
-                let row = item_card()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(5.0))
-                            .child(self.worktree_button(
-                                format!("stash-select-{id}"),
-                                &entry.message,
-                                Action::ShowStash(id),
-                                cx,
-                            ))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.0))
-                                    .child(badge(
-                                        &format!("stash@{{{}}}", entry.index),
-                                        theme::ACCENT,
-                                    ))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(rgb(theme::TEXT_MUTED))
-                                            .child(id.to_string()[..7].to_owned()),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(6.0))
-                            .items_center()
-                            .child(self.worktree_button(
-                                format!("stash-show-{id}"),
-                                "View",
-                                Action::ShowStash(id),
-                                cx,
-                            ))
-                            .child(self.worktree_button(
-                                format!("stash-apply-{id}"),
-                                "Apply",
-                                Action::Apply(id),
-                                cx,
-                            ))
-                            .child(self.worktree_button(
-                                format!("stash-pop-{id}"),
-                                "Pop",
-                                Action::Pop(id),
-                                cx,
-                            ))
-                            .child(self.worktree_button(
-                                format!("stash-drop-{id}"),
-                                "Delete",
-                                Action::Drop(id),
-                                cx,
-                            )),
-                    );
-                list = list.child(row);
-            }
-        } else {
-            if snapshot.changes.is_empty() {
-                return body
-                    .child(state_card(
-                        "Working tree clean",
-                        "There are no file changes to review or stage.",
-                        theme::GREEN,
-                    ))
-                    .into_any_element();
-            }
-            for (index, entry) in snapshot.changes.iter().enumerate() {
-                let status_color =
-                    if entry.status.contains("Conflicted") || entry.status.contains("Deleted") {
-                        theme::RED
-                    } else if entry.status.contains("Untracked") || entry.status.contains("Added") {
-                        theme::GREEN
-                    } else {
-                        theme::YELLOW
-                    };
-                let mut actions = div().flex().flex_wrap().items_center().gap(px(6.0)).child(
-                    self.worktree_button(
-                        format!("change-diff-{index}"),
-                        "Diff",
-                        Action::Diff(entry.path.clone()),
-                        cx,
-                    ),
-                );
-                if entry.unstaged {
-                    actions = actions.child(self.worktree_button(
-                        format!("change-stage-{index}"),
-                        "Stage",
-                        Action::Stage(entry.path.clone()),
-                        cx,
-                    ));
-                }
-                if entry.staged {
-                    actions = actions.child(self.worktree_button(
-                        format!("change-unstage-{index}"),
-                        "Unstage",
-                        Action::Unstage(entry.path.clone()),
-                        cx,
-                    ));
-                }
-                list = list.child(
-                    item_card()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .flex()
-                                .flex_col()
-                                .gap(px(5.0))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(entry.path.display().to_string()),
-                                )
-                                .child(div().flex().child(badge(&entry.status, status_color))),
-                        )
-                        .child(actions),
-                );
-            }
-        }
-        body.child(list)
-            .child(super::diff_view::render(&snapshot.diff_rows, stash))
-            .into_any_element()
-    }
-}
-
-fn badge(label: &str, color: u32) -> AnyElement {
-    div()
-        .px(px(8.0))
-        .py(px(2.0))
-        .rounded(px(5.0))
-        .bg(rgb(theme::BG_ELEVATED))
-        .text_xs()
-        .text_color(rgb(color))
-        .child(label.to_owned())
-        .into_any_element()
-}
-fn item_card() -> Div {
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(12.0))
-        .p(px(12.0))
-        .rounded(px(8.0))
-        .bg(rgb(theme::BG_SURFACE))
-        .border_1()
-        .border_color(rgb(theme::BORDER))
-}
-fn state_card(title: &str, message: &str, color: u32) -> AnyElement {
-    div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(10.0))
-        .p(px(24.0))
-        .bg(rgb(theme::BG_SURFACE))
-        .border_1()
-        .border_color(rgb(theme::BORDER))
-        .rounded(px(10.0))
-        .child(
-            div()
-                .size(px(42.0))
-                .rounded(px(12.0))
-                .bg(rgb(theme::BG_ELEVATED))
-                .text_color(rgb(color))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_lg()
-                .child(if color == theme::GREEN {
-                    "✓"
-                } else if color == theme::RED {
-                    "!"
-                } else {
-                    "◈"
-                }),
-        )
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title.to_owned()),
-        )
-        .child(
-            div()
-                .id("worktree-state-message")
-                .max_h(px(160.0))
-                .max_w_full()
-                .overflow_y_scroll()
-                .overflow_x_scroll()
-                .text_xs()
-                .text_color(rgb(theme::TEXT_SUBTLE))
-                .child(message.to_owned()),
-        )
-        .into_any_element()
 }

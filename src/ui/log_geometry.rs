@@ -8,6 +8,7 @@ pub(super) struct Observed {
     inner: AnyElement,
     bounds: Option<RowBounds>,
     painted: Option<Box<dyn FnOnce(&mut App)>>,
+    painting: Option<Box<dyn FnOnce(&mut Window, &mut App)>>,
 }
 
 // The owner clears the cell each frame so virtualized, unpainted rows have no bounds.
@@ -16,6 +17,7 @@ pub(super) fn row_bounds(element: impl IntoElement, bounds: RowBounds) -> Observ
         inner: element.into_any_element(),
         bounds: Some(bounds),
         painted: None,
+        painting: None,
     }
 }
 
@@ -27,6 +29,19 @@ pub(super) fn after_paint(
         inner: element.into_any_element(),
         bounds: None,
         painted: Some(Box::new(painted)),
+        painting: None,
+    }
+}
+
+pub(super) fn paint_with(
+    element: impl IntoElement,
+    painting: impl FnOnce(&mut Window, &mut App) + 'static,
+) -> Observed {
+    Observed {
+        inner: element.into_any_element(),
+        bounds: None,
+        painted: None,
+        painting: Some(Box::new(painting)),
     }
 }
 
@@ -79,6 +94,9 @@ impl Element for Observed {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(painting) = self.painting.take() {
+            painting(window, cx);
+        }
         self.inner.paint(window, cx);
         if let Some(painted) = self.painted.take() {
             cx.defer(painted);

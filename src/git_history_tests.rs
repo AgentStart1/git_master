@@ -81,10 +81,17 @@ fn each_tip_survives_and_expansion_reaches_history_past_200() {
 fn detached_head_exact_page_and_empty_repository() {
     let temp = tempfile::tempdir().unwrap();
     let repo = Repository::init(temp.path()).unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    assert_eq!(get_repo_detail(temp.path()).unwrap().current_branch, "main");
+    assert!(get_repo_detail(temp.path()).unwrap().head_oid.is_none());
     assert!(read_commit_history_page(&repo, &[], 200).0.is_empty());
     let base = commit(&repo, None, 10);
     let tip = commit(&repo, Some(base), 5); // Clock skew must not reverse ancestry.
     repo.set_head_detached(tip).unwrap();
+    assert_eq!(
+        get_repo_detail(temp.path()).unwrap().current_branch,
+        "HEAD detached"
+    );
     let (page, more) = read_commit_history_page(&repo, &[], 1);
     assert!(more);
     assert_eq!(page[0].full_hash, tip.to_string());
@@ -93,4 +100,30 @@ fn detached_head_exact_page_and_empty_repository() {
     assert_eq!(page.len(), 2);
     assert_eq!(page[0].full_hash, tip.to_string());
     assert_eq!(page[1].full_hash, base.to_string());
+}
+
+#[test]
+fn branch_labels_include_symbolic_remote_head_at_its_resolved_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = Repository::init(temp.path()).unwrap();
+    let oid = commit(&repo, None, 1);
+    repo.reference("refs/heads/main", oid, true, "fixture")
+        .unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    repo.remote("origin", "https://example.invalid/repo.git")
+        .unwrap();
+    repo.reference("refs/remotes/origin/main", oid, true, "fixture")
+        .unwrap();
+    repo.reference_symbolic(
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+        true,
+        "fixture",
+    )
+    .unwrap();
+    let labels = collect_branch_heads(&repo);
+    let labels = &labels[&oid.to_string()];
+    for expected in ["HEAD", "main", "origin/main", "origin/HEAD"] {
+        assert!(labels.iter().any(|s| s == expected), "missing {expected}");
+    }
 }

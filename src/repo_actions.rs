@@ -57,7 +57,7 @@ pub fn remote_statuses(repo: &Repository) -> Vec<RemoteStatus> {
     statuses
 }
 
-fn main_branch(repo: &Repository) -> Result<(String, Option<String>), String> {
+pub(crate) fn main_branch(repo: &Repository) -> Result<(String, Option<String>), String> {
     let remotes = repo.remotes().map_err(|error| error.to_string())?;
     let mut defaults = remotes
         .iter()

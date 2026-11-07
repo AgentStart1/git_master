@@ -52,3 +52,28 @@ def test_new_idle_status_is_completion_and_path_cannot_supply_error():
     app = observed_app(tree)
     assert app.wait_completion(7) is tree
     assert "failed" not in status(tree)
+
+
+def test_linux_window_selection_matches_utf8_title_after_pid_search(monkeypatch):
+    app = App.__new__(App)
+    app.proc = SimpleNamespace(pid=123)
+    app.window_title = "Git Master · 操作日志"
+    calls = []
+
+    def xdo(command, **kwargs):
+        calls.append(command)
+        args = command[1:]
+        if args[0] == "search":
+            assert args == ["search", "--onlyvisible", "--pid", "123"]
+            return "10\n20\n"
+        if args[0] == "getwindowname":
+            return "Git Master\n" if args[1] == "10" else app.window_title + "\n"
+        if args[0] == "getwindowgeometry":
+            return "X=0\nY=0\nWIDTH=1440\nHEIGHT=1024\n"
+        return ""
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("subprocess.check_output", xdo)
+    assert app.window_geometry() == (0, 0, 1440, 1024)
+    assert app.window == "20"
+    assert ["xdotool", "windowfocus", "20"] in calls

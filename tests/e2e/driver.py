@@ -167,11 +167,11 @@ class App:
             def xdo(*args):
                 return subprocess.check_output(["xdotool", *map(str, args)], text=True, timeout=3).strip()
             title = getattr(self, "window_title", None)
+            windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
             if title is not None:
-                import re
-                windows = xdo("search", "--onlyvisible", "--all", "--pid", self.proc.pid, "--name", "^" + re.escape(title) + "$").splitlines()
-            else:
-                windows = xdo("search", "--onlyvisible", "--pid", self.proc.pid).splitlines()
+                # Search uses the legacy X11 title; getwindowname reads the UTF-8
+                # title, which is required for independently titled Chinese windows.
+                windows = [window for window in windows if xdo("getwindowname", window) == title]
             assert len(windows) == 1, windows
             self.window = windows[0]
             # Xvfb has no window manager: focusing alone leaves another native
@@ -291,7 +291,7 @@ class App:
                 (self.artifacts / "logs-view-tree.json").write_text(json.dumps(logs, ensure_ascii=False, indent=2), encoding="utf-8")
                 import copy
                 log_window = copy.copy(self)
-                log_window.window_title = "Git Master Logs"
+                log_window.window_title = "Git Master · 操作日志"
                 x, y, width, height = log_window.window_geometry()
                 pyautogui.screenshot(region=(x, y, width, height)).save(self.artifacts / "logs-window.png")
         except Exception as error:

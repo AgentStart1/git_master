@@ -87,6 +87,7 @@ def test_removed_stash_cannot_act_on_replacement(app_factory, isolated_git):
     app = app_factory(root)
     app.select(0, repo)
     app.tab("stash")
+    app.click(f"stash-show-{stale}")
     git(repo, "stash", "drop")
     (repo / "tracked.txt").write_text("replacement stash\n", encoding="utf-8")
     git(repo, "stash", "push")
@@ -156,6 +157,7 @@ def test_failed_stage_index_lock_is_reported_and_retry_succeeds(app_factory, iso
     assert git(repo, "diff", "--cached", "--name-only") == ""
     assert lock.read_text() == "owned by another Git operation"
     assert (repo / "tracked.txt").read_text() == "keep working bytes\n"
+    app.click("blocked-close")
     lock.unlink()
     app.change(repo, "tracked.txt", "stage")
     wait_for(lambda: git(repo, "diff", "--cached", "--name-only").strip() == "tracked.txt")

@@ -52,6 +52,7 @@ def test_failed_checkout_restores_filter_then_retry_succeeds(app_factory, isolat
     assert git(repo, "branch", "--show-current").strip() == "main"
     assert (repo / "tracked.txt").read_text() == "unsaved main work\n"
     assert "Unmerged feature history" not in text(find(app.tree(), "log-list")), "failed checkout must not add a visible branch"
+    app.click("blocked-close")
     git(repo, "stash", "push", "-m", "Preserve local edit before retry")
     app.click("log-checkout-feature")
     assert status(app.tree()) == "Branch operation complete"
@@ -102,6 +103,7 @@ def test_repeated_stash_apply_failures_then_success_do_not_leave_busy_or_stale_e
         assert app.idle(app.tree()) and "failed" in status(app.tree()).lower()
         assert (repo / "tracked.txt").read_text() == "local conflict\n"
         assert git(repo, "rev-parse", "refs/stash").strip() == oid
+        app.click("blocked-close")
     # The fixture deliberately resolves the local conflict before the final retry.
     git(repo, "checkout", "--", "tracked.txt")
     app.click(f"stash-apply-{oid}")

@@ -67,7 +67,7 @@ def test_submodule_placeholders_own_history_and_initialization(app_factory, isol
     canvas = find(tree, "commit-canvas")
     assert len([n for n in canvas["children"] if n["node_type"] == "group"]) == 2
     assert "Referenced commit not loaded" in text(canvas)
-    assert "(submodule)" in text(canvas) and "(head)" in text(canvas)
+    assert "(submodule)" in text(canvas) and "HEAD" in text(canvas)
     app.select(1, epsilon)
     app.tab("log")
     app.click("log-view-canvas")

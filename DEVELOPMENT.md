@@ -1,27 +1,12 @@
-# Development
+# 开发
 
-## CI cache baseline
+## CI 缓存基线
 
-CI runs three-platform checks, the Linux `test-rpc` build, Rust regressions and
-driver unit tests on relevant `main` pushes and pull requests. The complete
-desktop E2E suite remains mandatory on PRs; main produces the dependency cache
-without repeating that suite. Keep push and pull-request path filters aligned.
-The `check` and `e2e` job IDs are part of the default `Swatinem/rust-cache`
-key: retain them so PRs can restore compatible base-branch caches. The action
-also separates runner OS/architecture, Rust toolchains and Cargo environment;
-check (production plus `test-rpc`), E2E debug (`test-rpc`) and release builds
-remain separate. Release caching is unchanged.
+CI 在相关 `main` 推送与 pull request 中运行三平台检查、Linux `test-rpc` 构建、Rust 回归和驱动单元测试。PR 仍必须执行完整桌面 E2E 套件；main 生产依赖缓存，不重复该套件。保持 push 和 pull-request 路径过滤一致。`check` 与 `e2e` 作业 ID 属于默认 `Swatinem/rust-cache` 键的一部分，须保留，供 PR 恢复兼容的基准分支缓存。action 还隔离 runner 系统／架构、Rust 工具链和 Cargo 环境；check（生产与 `test-rpc`）、E2E debug（`test-rpc`）及 release 构建保持独立。Release 缓存不变。
 
-Cache hits reuse dependency artifacts, not the application crate or test
-results: every validation command still runs. Stable toolchain updates and
-dependency changes can cause misses. A cache created by one PR is not a baseline
-for another PR; the successful base-branch run is the producer.
+缓存命中复用依赖产物，不复用应用 crate 或测试结果；所有验证命令仍执行。稳定工具链更新与依赖变化可能导致未命中。一个 PR 创建的缓存不是另一个 PR 的基线；成功的基准分支运行才是生产者。
 
-To evaluate the tradeoff, compare a cold producer, a warm producer and a **new**
-PR targeting that producer branch, at the same source revision and toolchain.
-Use an isolated fork/branch rather than deleting useful production caches.
-Record cache restore/save time, each Cargo step, total job duration and cache
-size, separately for each runner/job. GitHub's job and cache APIs expose these:
+评估取舍时，在相同源码修订和工具链下比较冷生产者、热生产者，以及以该生产者分支为目标的**新** PR。使用隔离 fork／分支，不删除有用的生产缓存。按 runner／作业分别记录恢复与保存耗时、每个 Cargo 步骤、作业总时长及缓存大小。GitHub 作业与缓存 API 提供这些信息：
 
 ```sh
 gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs
@@ -29,66 +14,31 @@ gh api repos/OWNER/REPO/actions/caches --paginate
 gh run view RUN_ID --repo OWNER/REPO --log
 ```
 
-Confirm the new PR logs restore the producer's cache key, rather than merely
-reporting a hit on a prior PR's cache. Include upload/download overhead in the
-comparison. For each job, divide the added warm `main` job duration by the cold
-minus warm PR duration to estimate the number of fresh PR validations needed
-per relevant `main` push to recover the added runner time. Report runner seconds
-per OS separately; they are not a billing estimate. Initial cache population,
-cache eviction, dependency churn and runner variability add costs. Retain the
-previous behavior for any job whose measured workload does not justify warming.
+确认新 PR 日志恢复生产者的缓存键，而非仅命中先前 PR 的缓存。比较中纳入上传和下载开销。对每个作业，用新增热 `main` 作业时长除以冷 PR 与热 PR 的时长差，估算每次相关 `main` 推送需要多少次新 PR 验证才能抵消新增 runner 时间。按系统分别报告 runner 秒数，不将其作为费用估算。初始缓存填充、淘汰、依赖变化和 runner 波动还会增加成本。实测工作量不足以证明预热有价值的作业保留原行为。
 
-### Cache measurements (2026-10-25)
+### 缓存测量（2026-10-25）
 
-Measured in an isolated fork using a producer branch as the PR base (the same
-[base-branch cache access rule](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache)
-used by `main`). Application source, lockfile and Rust toolchain were unchanged.
-The fork initially had no caches. The cold validation also ran the complete
-desktop suite; the warm producer used the final main behavior described above.
-This is one sample per configuration, not a guarantee for future runners.
+在隔离 fork 中，以生产者分支作为 PR 基准测量，使用与 `main` 相同的[基准分支缓存访问规则](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache)。应用源码、lockfile 和 Rust 工具链不变；fork 起初没有缓存。冷验证也执行完整桌面套件，热生产者使用上述最终 main 行为。每种配置只测一次，不保证未来 runner 表现。
 
-- [Cold validation](https://github.com/AgentStart1/git_master/actions/runs/40173406657)
-- [Warm producer](https://github.com/AgentStart1/git_master/actions/runs/40173924876)
-- [Fresh PR validation](https://github.com/AgentStart1/git_master/actions/runs/40173937268)
+- [冷验证](https://github.com/AgentStart1/git_master/actions/runs/40173406657)
+- [热生产者](https://github.com/AgentStart1/git_master/actions/runs/40173924876)
+- [新 PR 验证](https://github.com/AgentStart1/git_master/actions/runs/40173937268)
 
-| Job | Cold job (s) | Fresh warm PR job (s) | Added warm main job (s) | Rust cache (MiB) |
+| 作业 | 冷作业（秒） | 新热 PR 作业（秒） | 新增热 main 作业（秒） | Rust 缓存（MiB） |
 |---|---:|---:|---:|---:|
 | Linux check | 131 | 38 | 39 | 476.0 |
 | macOS check | 244 | 26 | 35 | 357.3 |
 | Windows check | 290 | 98 | 80 | 365.5 |
-| Linux E2E / build producer | 464 | 353 | 66 | 800.8 |
-| Total runner seconds | 1129 | 515 | 220 | 1999.6 |
+| Linux E2E／构建生产者 | 464 | 353 | 66 | 800.8 |
+| runner 总秒数 | 1129 | 515 | 220 | 1999.6 |
 
-Job durations include setup, dependencies and cache transfer/cleanup; queue
-time is excluded. The three check jobs save 503 runner seconds per fresh PR,
-against 154 seconds of added warm-main checks. Their per-job break-even ratios
-are 0.42, 0.16 and 0.42 fresh PR validations per relevant main push, respectively.
-The E2E job saves another 111 seconds against 66 seconds of added main work
-(break-even 0.59). One fresh PR per relevant warm main push therefore saves
-614 - 220 = 394 runner seconds in this sample. Every job passes this steady-state
-threshold, so all four producers are retained. These are cumulative runner
-seconds, not elapsed time or money. The PR's longest job fell from 464 to 353
-seconds. Initial cold population costs more and must be amortized separately:
-the measured cold producer consumed 1129 seconds including a 262-second desktop
-step; excluding that step estimates 867 seconds for the final cold-main behavior,
-but that estimate is not a separately measured run.
+作业时长包含环境准备、依赖和缓存传输／清理，不含排队。三个 check 作业每个新 PR 节省 503 runner 秒，对应新增热 main 检查 154 秒。各作业收支平衡比依次为每次相关 main 推送 0.42、0.16、0.42 次新 PR 验证。E2E 再节省 111 秒，对应新增 main 工作 66 秒，平衡比为 0.59。因此本样本中，每次相关热 main 推送对应一个新 PR，可节省 614 - 220 = 394 runner 秒。每个作业都达到该稳态阈值，保留全部四个生产者。这是累计 runner 秒数，不是实际等待时间或金额。PR 最长作业从 464 秒降至 353 秒。初始冷填充成本更高，需单独摊销：实测冷生产者消耗 1129 秒，其中桌面步骤 262 秒；排除它估算最终冷 main 行为为 867 秒，但这不是另一次独立实测。
 
-The restored Rust cache steps on the fresh PR took 9/9/28 seconds for
-Linux/macOS/Windows; production `cargo check` took 2/8/44 seconds, versus
-82/180/200 seconds cold. All four Rust caches total 2.10 GB (plus 11.2 MB for
-pip). Their keys retain separate `check`/`e2e`, OS/architecture and Rust/Cargo
-hashes. The cache API listed only producer-branch refs, and fresh PR logs
-reported those exact keys restored successfully, proving cross-branch reuse.
-The warm PR's E2E build took 6 seconds versus 139 seconds cold, with a 13-second
-cache restore. The desktop suite itself varied from 262 to 284 seconds and is
-not accelerated by this cache. Both full validations passed 94 E2E cases with
-the existing two Windows-only skips, 53 Rust regressions and six driver tests.
-This validates the mechanism in the fork; upstream `main` must run successfully
-after merge before upstream PRs can benefit.
+新 PR 恢复 Rust 缓存步骤在 Linux／macOS／Windows 分别耗时 9／9／28 秒；生产 `cargo check` 为 2／8／44 秒，冷运行则为 82／180／200 秒。四份 Rust 缓存共 2.10 GB，另有 pip 11.2 MB。键保留独立 `check`／`e2e`、系统／架构与 Rust／Cargo 哈希。缓存 API 仅列出生产者分支引用，新 PR 日志报告精确键恢复成功，证明跨分支复用。热 PR E2E 构建耗时 6 秒，冷为 139 秒，缓存恢复 13 秒。桌面套件本身由 262 波动至 284 秒，不受此缓存加速。两次完整验证均通过 94 个 E2E 用例（保留已有两个 Windows 专用跳过项）、53 个 Rust 回归和六个驱动测试。这只验证 fork 中的机制；合并后上游 `main` 必须先成功运行，上游 PR 才能受益。
 
-## Rust checks
+## Rust 检查
 
-Use a current Rust stable toolchain (edition 2024), Git, and the GPUI platform dependencies described in README.md.
+使用当前 Rust 稳定工具链（edition 2024）、Git，以及 README.md 说明的 GPUI 平台依赖。
 
 ```sh
 cargo fmt --check
@@ -98,175 +48,175 @@ cargo test
 cargo test --features test-rpc
 ```
 
-## End-to-end tests
+## 端到端测试
 
-The former Shell suites have been migrated to Python 3.12+ and pytest. The tests launch a real GPUI executable, click controls with desktop mouse input, observe the rendered view tree through loopback JSON-RPC, and assert the actual Git index, files, branches, stash entries, and local remotes.
+原 Shell 套件已迁移为 Python 3.12+ 与 pytest。测试启动真实 GPUI 可执行文件，通过桌面鼠标点击控件，经回环 JSON-RPC 观察已渲染视图树，并断言实际 Git 索引、文件、分支、stash 条目和本地远端。
 
-Install dependencies:
+安装依赖：
 
 ```sh
 python -m pip install -r tests/requirements.txt
 ```
 
-On an unlocked Windows desktop:
+在已解锁 Windows 桌面运行：
 
 ```sh
 python -m pytest tests/e2e -v --junitxml=test-results/e2e.xml
 ```
 
-The suite builds a dedicated `git_master_e2e.exe` once, leaving an already running development executable alone. It moves the mouse and brings its own application windows to the foreground. Avoid interacting with the desktop during the run. Run tests serially; do not use pytest-xdist against a shared desktop.
+套件只构建一次专用 `git_master_e2e.exe`，不影响已经运行的开发可执行文件。它会移动鼠标并将自己的窗口置于前台，运行时避免操作桌面。测试必须串行，不要在共享桌面使用 pytest-xdist。
 
-On Linux/X11 install the GPUI build dependencies plus `xvfb`, `xauth`, `xdotool`, `scrot`, `gnome-screenshot`, `python3-tk`, and `fonts-droid-fallback`, then run:
+Linux／X11 除 GPUI 构建依赖外，还需 `xvfb`、`xauth`、`xdotool`、`scrot`、`gnome-screenshot`、`python3-tk` 和 `fonts-droid-fallback`，然后运行：
 
 ```sh
 xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e -v --junitxml=test-results/e2e.xml
 ```
 
-To use an existing test-rpc build:
+使用已有 test-rpc 构建：
 
 ```sh
 cargo build --features test-rpc
 xvfb-run -a -s "-screen 0 1600x1200x24" python -m pytest tests/e2e --app-binary target/debug/git_master
 ```
 
-Use `--app-binary target/debug/git_master_e2e.exe` on Windows to reuse a prior dedicated build. Runtime-only desktop test environments may also pass `--failing-difft-binary PATH` with a fixture executable compiled from `tests/fixtures/difft_failure.rs` on the build machine; this avoids requiring a Rust compiler on the test desktop. Select only critical cases with `-m p0`, or core workflow cases with `-m p1`. Specify `tests/e2e` explicitly before custom options so pytest loads the suite's options. macOS desktop input and Wayland are not currently implemented by this driver.
+Windows 用 `--app-binary target/debug/git_master_e2e.exe` 复用先前专用构建。仅用于运行的桌面测试环境还可传入 `--failing-difft-binary PATH`，指定在构建机上由 `tests/fixtures/difft_failure.rs` 编译的夹具可执行文件，避免要求测试桌面安装 Rust 编译器。`-m p0` 只选关键用例，`-m p1` 选择核心流程用例。自定义选项前显式指定 `tests/e2e`，让 pytest 加载套件选项。此驱动尚未实现 macOS 桌面输入和 Wayland。
 
-Tests use per-test temporary repositories, synthetic identities, disabled personal/system Git configuration, local-only remotes, and an individual loopback port. Each application process is terminated during fixture teardown. Timeouts poll observable conditions; they do not assume operations finish after a fixed sleep. Test code must not operate on a developer's repositories.
+各测试使用独立临时仓库、合成身份、禁用的个人／系统 Git 配置、仅本地远端和独立回环端口。夹具拆除时终止每个应用进程。超时轮询可观察条件，不假设操作在固定休眠后完成。测试代码不得操作开发者仓库。
 
-## P0/P1 coverage
+## P0/P1 覆盖
 
-P0 means data integrity or explicit approval before a destructive action. P1 means a core navigation, history, preview, submodule, or synchronization workflow. These are project test priorities, not a claim that every UI interaction has exhaustive coverage.
+P0 表示数据完整性或破坏性操作前的明确批准。P1 表示核心导航、历史、预览、子模块或同步流程。这是项目测试优先级，不代表每项 UI 交互都有穷尽覆盖。
 
-| Priority | Workflow | Assertions |
+| 优先级 | 流程 | 断言 |
 |---|---|---|
-| P0 | Stage / Unstage: modified, new, deleted, literal paths, unborn branches | Correct index entries; newest working files preserved; no glob expansion; deleted files stay absent |
-| P0 | Save stash, Apply, Pop | Staged/working/untracked data saved and restored; Apply retains stash; successful Pop removes it |
-| P0 | Stash deletion | No mutation before confirmation; Cancel preserves stash; Delete preserves working files |
-| P0 | Conflicting Apply / Pop | Visible failure; stash and local edits retained |
-| P0 | Branch checkout/deletion safeguards | Overlapping local changes and unmerged commits protected; confirmation cancellation respected |
-| P0 | Reset to remote | Cancel preserves HEAD; clean confirmed reset matches remote; dirty tree blocks reset and retains edits |
-| P1 | Scan / select / switch repositories | Correct ordering, branches and dirty indicators; details/history match selection; no previous repo changes leak |
-| P1 | History list / canvas / commit details | Expected commits, graph lanes and links; open and close details via real controls, including long paths |
-| P1 | Submodules | Initialized/uninitialized lanes and placeholders; selected module owns history; staging affects only module; initialization works |
-| P1 | Git Change / stash previews | Staged/worktree/untracked sections; diff rows and highlight ranges visible; preview does not mutate files |
-| P1 | Fetch / Pull / Push | Fetched references without checkout; pull restores autostashed local edits; push reaches local remote; sync counts refresh |
-| P1 | Fetch All / Switch All to Main | Failed remote does not prevent others updating; default branches switch; untracked work survives |
+| P0 | Stage／Unstage：修改、新增、删除、字面路径、尚无提交的分支 | 索引条目正确；保留最新工作文件；不展开通配符；删除文件仍不存在 |
+| P0 | 保存 stash、Apply、Pop | 保存并恢复暂存／工作树／未跟踪数据；Apply 保留 stash；成功 Pop 移除 |
+| P0 | 删除 stash | 确认前不修改；Cancel 保留 stash；Delete 保留工作文件 |
+| P0 | 冲突 Apply／Pop | 失败可见；保留 stash 和本地编辑 |
+| P0 | 分支 checkout／删除保护 | 保护重叠本地改动和未合并提交；遵循确认取消 |
+| P0 | Reset 到远端 | Cancel 保留 HEAD；干净且确认的 reset 与远端一致；脏工作树阻止 reset 并保留编辑 |
+| P1 | 扫描／选择／切换仓库 | 排序、分支和脏标记正确；详情／历史匹配选择；不泄露前一仓库改动 |
+| P1 | 历史列表／画布／提交详情 | 提交、图泳道和链接符合预期；通过真实控件开关详情，包括长路径 |
+| P1 | 子模块 | 已初始化／未初始化泳道和占位符；所选模块管理自己的历史；暂存仅影响模块；初始化可用 |
+| P1 | Git Change／stash 预览 | 暂存／工作树／未跟踪部分；差异行与高亮范围可见；预览不改文件 |
+| P1 | Fetch／Pull／Push | 获取引用但不 checkout；pull 恢复自动 stash 的本地编辑；push 到达本地远端；同步计数刷新 |
+| P1 | Fetch All／Switch All to Main | 远端失败不妨碍其他更新；切换默认分支；未跟踪工作保留 |
 
-### Coverage audit additions
+### 覆盖审计新增项
 
-The suite now has 99 cases: 26 P0 and 73 P1. The audit compared the worktree actions, history controls, repository navigation, batch operations, and remote-operation handlers with executable UI tests. In addition to the initial matrix above:
+套件目前有 99 个用例：26 个 P0、73 个 P1。审计将工作树操作、历史控件、仓库导航、批处理和远端操作处理函数，与可执行 UI 测试逐项比较。在上述初始矩阵之外新增：
 
-| Priority | Previously missing workflow | Assertions |
+| 优先级 | 先前缺失的流程 | 断言 |
 |---|---|---|
-| P0 | Push rejection / Pull rebase conflict | Remote and local commits remain recoverable; untracked and unsaved work survives; visible failure |
-| P0 | Multiple and stale stash entries | Apply/Pop/Delete use the selected object ID after indexes shift; missing entries cannot affect replacements |
-| P0 | Stash without identity / locked index | Failure preserves staged and working data; another operation's lock remains untouched; retry works |
-| P0 | Submodule stash isolation | Save/preview/Pop target the selected module; parent work and parent stash remain untouched |
-| P0 | Batch checkout partial failure / missing reset branch | Unsafe target is preserved; other repositories proceed; missing remote branch does not discard commits |
-| P1 | Refresh, empty workspace and clean repository | Disabled batch actions are harmless; external changes update list, sidebar and Info; untracked-only stash preview hides empty sections |
-| P1 | Rename, binary and Unicode files | Preview is readable; Stage/Unstage preserves exact file bytes and correct index paths |
-| P1 | Branch visibility filter | List and graph reflect selection; last visible branch cannot be hidden; HEAD does not change |
-| P1 | Appearance and workspace filters | Light/Dark preserves selected history and commit details; preferences survive restart; repository search and status filters preserve selection |
-| P1 | Canvas click, node drag, pan and zoom | Click opens details; drag does not; geometry changes; per-repository view state survives switching |
-| P1 | Repository context menu / failed Fetch retry | Menu opens/dismisses without selecting the wrong repository; failure is visible and retry recovers |
-| P1 | Default branch resolution | Use Main supports local master and a remote default branch without a local counterpart |
-| P1 | Native workspace picker (Windows) | Cancel preserves selection; choosing another workspace clears old details and rescans |
+| P0 | Push 拒绝／Pull rebase 冲突 | 远端和本地提交仍可恢复；未跟踪与未保存工作保留；失败可见 |
+| P0 | 多个及过时 stash 条目 | 索引移动后 Apply／Pop／Delete 仍使用选定对象 ID；缺失条目不影响替代项 |
+| P0 | 无身份 stash／锁定索引 | 失败保留暂存与工作数据；不触碰其他操作的锁；可重试 |
+| P0 | 子模块 stash 隔离 | 保存／预览／Pop 作用于选定模块；父仓库工作和 stash 不变 |
+| P0 | 批量 checkout 部分失败／reset 分支缺失 | 保留不安全目标；其他仓库继续；缺失远端分支不丢弃提交 |
+| P1 | 刷新、空工作区和干净仓库 | 禁用批操作无害；外部改动更新列表、侧栏和 Info；仅未跟踪 stash 预览隐藏空部分 |
+| P1 | 重命名、二进制和 Unicode 文件 | 预览可读；Stage／Unstage 保留精确文件字节和正确索引路径 |
+| P1 | 分支可见性过滤 | 列表和图反映选择；不能隐藏最后一个可见分支；HEAD 不变 |
+| P1 | 外观与工作区过滤 | Light／Dark 保留已选历史和提交详情；偏好跨重启保存；仓库搜索及状态过滤保留选择 |
+| P1 | 画布点击、节点拖动、平移和缩放 | 点击开详情、拖动不开；几何变化；切换后保留各仓库视图状态 |
+| P1 | 仓库上下文菜单／Fetch 失败重试 | 菜单打开／关闭不误选仓库；失败可见且重试恢复 |
+| P1 | 默认分支解析 | Use Main 支持本地 master 和没有本地对应分支的远端默认分支 |
+| P1 | 原生工作区选择器（Windows） | Cancel 保留选择；选择其他工作区清空旧详情并重新扫描 |
 
-The two native folder-picker cases run on Windows and are explicitly skipped in Linux CI, which has no desktop portal session. The remaining 92 cases run on both supported test platforms. This is functional coverage, not exhaustive combinations: OS-native dialog appearance, launching external terminals/file managers, and pixel-level appearance remain separate desktop integration/visual checks. macOS/Wayland input remains outside this driver's supported platforms. Difftastic parsing/fallback variants retain Rust coverage; the E2E diff cases exercise the renderer available on the runner.
+两个原生文件夹选择器用例只在 Windows 运行，在没有桌面 portal 会话的 Linux CI 明确跳过。其余 92 个用例在两个支持平台都运行。这是功能覆盖，不是穷尽组合：系统原生对话框外观、外部终端或文件管理器启动和像素级外观仍需单独的桌面集成／视觉检查。macOS／Wayland 输入仍不属于驱动支持平台。Difftastic 解析与回退变体保留 Rust 覆盖；E2E 差异用例执行 runner 上可用的渲染器。
 
-`GIT_MASTER_TEST_CONFIG_DIR` redirects libgit2's system/global/XDG/ProgramData configuration search paths in the test build before threads start. Git subprocesses separately use `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`; both configuration readers must be isolated. Production builds do not honor the test-only setting.
+`GIT_MASTER_TEST_CONFIG_DIR` 在测试构建启动线程前，重定向 libgit2 的 system／global／XDG／ProgramData 配置搜索路径。Git 子进程另用 `GIT_CONFIG_GLOBAL` 和 `GIT_CONFIG_NOSYSTEM`；两种配置读取器都必须隔离。生产构建不读取此测试专用设置。
 
-## Test observation and confirmation boundary
+## 测试观察与确认边界
 
-### Failure, cancellation and retry recovery
+### 失败、取消与重试恢复
 
-Four desktop cases exercise rejected branch deletion, rejected checkout, cancelled stash deletion, and repeated failed stash Apply followed by a successful retry. They check history/filter recovery as well as Git refs, index/files and a new completion for each attempt. Three cases fail against the pre-fix executable; the repeated-Apply case is additional recovery coverage. Failed branch mutations retain the previous visible branches and rebuild their history accordingly. Cancellation explicitly publishes a cancelled result and releases busy state.
+四个桌面用例覆盖分支删除拒绝、checkout 拒绝、stash 删除取消，以及 stash Apply 多次失败后重试成功。它们检查历史／过滤器恢复、Git 引用、索引／文件，以及每次尝试的新完成结果。三个用例在修复前可执行文件上失败，重复 Apply 是额外恢复覆盖。分支变更失败时保留先前可见分支，据此重建历史。取消显式发布取消结果并释放忙碌状态。
 
-The six driver acknowledgement checks include both positive and cancelled confirmations disappearing without a new result. Test snapshots are emitted after painting and published by monotonically increasing view revisions; a late or duplicate worker result cannot replace a newer snapshot. A Rust regression forces that out-of-order publication without timing assumptions.
+六个驱动确认检查包含确认和取消对话框消失却没有新结果的情况。测试快照在绘制后发出，按单调递增视图修订发布；迟到或重复 worker 结果不能替换新快照。一个 Rust 回归不依赖时序地强制乱序发布。
 
-A separate Windows regression holds a completed scan on its worker, opens and cancels the native workspace picker, then releases the result. It fails before the fix that separates directory-prompt ownership from scan-task ownership. `GIT_MASTER_TEST_SCAN_GATE` is confined to the test build and worker thread with a 30-second bound and fixture release in `finally`. The folder-switch case waits for the native dialog to be active, fills and verifies its focused Edit control via standard native control messages, observes the expected folder contents through Windows UI Automation, and clicks Select Folder. Control rebuilds during shell navigation retry only ElementNotAvailableException observations; the expected folder item must still appear. Windows PowerShell/UIAutomationClient is required for these two native-dialog cases; other cases retain normal desktop clicks and read-only application RPC observations.
+另一个 Windows 回归将已完成扫描保留在 worker，打开并取消原生工作区选择器后再释放结果。目录提示归属与扫描任务归属分离的修复之前，该用例失败。`GIT_MASTER_TEST_SCAN_GATE` 仅在测试构建和 worker 线程有效，限时 30 秒，夹具在 `finally` 释放。文件夹切换用例等待原生对话框激活，通过标准原生控件消息填入并验证焦点 Edit 控件，用 Windows UI Automation 观察预期文件夹内容，再点击 Select Folder。shell 导航重建控件时只重试 ElementNotAvailableException 观察；预期文件夹条目仍必须出现。这两个原生对话框用例需要 Windows PowerShell／UIAutomationClient；其他用例仍使用普通桌面点击与只读应用 RPC 观察。
 
-### Asynchronous navigation regressions
+### 异步导航回归
 
-Five desktop cases hold actual Git operations at bounded pre-push, reference-transaction and post-checkout hooks. They load another repository's Change/Stash while Push is pending, preserve another repository's branch filter after deletion, reject a prior history snapshot after A→B→A navigation, and keep same-relative-path submodules isolated by parent identity. Four of these cases fail against the pre-fix executable; the submodule case is an additional boundary check. Release files control ordering, and fixture teardown releases every hook even after assertions fail; no fixed delay determines correctness.
+五个桌面用例在有时限的 pre-push、reference-transaction 和 post-checkout hook 暂停实际 Git 操作。它们在 Push 待完成时加载另一仓库的 Change／Stash，删除后保留另一仓库分支过滤器，在 A→B→A 导航后拒绝旧历史快照，以及按父仓库身份隔离相同相对路径的子模块。四个用例在修复前失败；子模块用例是额外边界检查。释放文件控制顺序，即使断言失败，夹具拆除也释放全部 hook；不靠固定延迟判定正确性。
 
-Only these concurrency cases use `await_operation=False`: they require the hook's entered marker and an observable busy state, navigate while the hook is blocked, release it, and finally require a new idle completion. Normal operation clicks keep automatic completion acknowledgement. Hook fixtures are checked out with LF endings on Windows as well as Linux.
+只有这些并发用例使用 `await_operation=False`：要求 hook entered 标记与可观察忙碌状态，在 hook 阻塞时导航，随后释放，最后要求新的 idle 完成。普通操作点击保持自动完成确认。hook 夹具在 Windows 和 Linux 均以 LF 检出。
 
-Selection and workspace transitions invalidate read-request ownership. A completed old read cannot clear a newer loading state or publish its snapshot. Mutations remain serialized and continue against their original Git target; a superseded navigation causes current details/filter data to be reloaded rather than restoring the operation's previous view. Visible Change/Stash data is refreshed after mutations without overwriting the operation outcome message.
+选择和工作区转换会使读取请求归属失效。已完成旧读取不能清除新加载状态或发布快照。修改操作仍串行执行，作用于原 Git 目标；导航被取代时重新加载当前详情／过滤数据，不恢复操作原来的视图。修改后刷新可见 Change／Stash 数据，不覆盖操作结果消息。
 
-Operation clicks must observe a newer `status_revision` and an idle state before assertions. The revision is emitted by the test build's actual status setter, so identical successive messages still identify distinct operations. Confirmation and cancellation both have the same requirement. Error checks read only `status-message`, never repository paths or the complete tree. Keep independent Git/index/file assertions after this acknowledgement; a completion signal alone does not prove correctness.
+操作点击后，断言前必须观察更新的 `status_revision` 和 idle 状态。修订由测试构建实际状态 setter 发出，因此连续相同消息也能标识不同操作。确认与取消均如此。错误检查只读取 `status-message`，不读仓库路径或完整树。确认后仍保留独立 Git／索引／文件断言；完成信号本身不能证明正确。
 
-Run `python -m pytest tests/unit -q` for driver mutation checks. These deliberately swallow mouse input or remove a confirmation without completing the action, and require the driver to reject stale success/error messages and in-progress states. They are separate from the 94 desktop E2E cases and also run in CI.
+用 `python -m pytest tests/unit -q` 运行驱动变异检查。它们故意吞掉鼠标输入，或移除确认但不完成操作，要求驱动拒绝过时成功／错误消息和进行中状态。这些检查独立于 94 个桌面 E2E 用例，也在 CI 运行。
 
-The test build tracks control bounds during real painting and attaches them to semantic view-tree nodes. Python resolves the test process's client window, accounts for display scale, clicks the rendered control, and waits for the corresponding UI and Git effects. The application state mutation RPC helpers remain for compatibility but the pytest cases do not call them.
+测试构建在真实绘制时跟踪控件边界，并附加到语义视图树节点。Python 找到测试进程的客户窗口，考虑显示缩放，点击已渲染控件，再等待对应 UI 与 Git 效果。应用状态修改 RPC 辅助方法为兼容保留，但 pytest 用例不调用。
 
-Operation confirmations use the same themed GPUI component in production and test builds. Test builds add bounds and state instrumentation so desktop tests can click the real Cancel/Confirm controls and exercise the approval callbacks. Destructive prompts start on Cancel and support Escape, Tab/arrows, Enter and Space. Structured risk fields and preview tables cross the toolkit's string prompt interface as JSON; native directory/file pickers remain separate. Screenshots and matching-state comparisons are required for visual acceptance.
-
-## Failure artifacts and CI
-
-`--artifacts test-results/e2e` selects the diagnostics folder. Each case records application output and isolated operation logs. Failures also save the last view tree and a screenshot cropped to the test application's client window where available. A JUnit XML report is emitted by `--junitxml`.
-
-CI builds the application on Linux, Windows, and macOS. The E2E job also executes the Rust regression suite and driver acknowledgement checks, then runs desktop pytest cases serially under Linux Xvfb and uploads JUnit, application logs, failure trees, and screenshots even after a test failure. Local Windows runs exercise the same tests on a real desktop. No network credentials or external Git hosting are needed by the tests.
-
-The task feedback regression holds a real Push at a Git hook, then rejects another Push with 120 diagnostic lines. It verifies compact and expanded panel bounds, remaining content height, automatic collapse on completion, full clipboard output, and remote Git state. The final diagnostic line has real painted bounds: it must begin outside the details viewport and move fully inside it after a wheel scroll. Screenshots alone are not accepted as scroll assertions. Passing screenshots are saved in that case's artifact directory.
-
-Twelve task-progress cases hold Stage, Unstage, Save, Apply, Pop and Drop on their actual worker boundary, each after a previous success and a recoverable failure. They assert the text of the painted summary, a fresh status revision, collapsed old details, and the final Git/index/file state. `GIT_MASTER_TEST_WORKTREE_GATE` names a test-only gate directory; creating it arms the gate, `entered` acknowledges worker arrival, and `release` resumes it (bounded to 30 seconds). Concurrent reads retain the running mutation's status. The shared worker gate also preserves the existing scan cancellation boundary.
-
-On Windows, if foreground activation is denied, the driver temporarily raises only its own window and clicks a safe header point after verifying that point belongs to the test process; it then restores normal stacking. It never clicks another application's window to obtain focus.
-
-Mutation verification: removing the worktree start-status update makes the Stage-after-failure case reject the stale error summary; disabling vertical scrolling makes the long-error case time out waiting for the painted final line to enter the viewport. Both mutations were verified to fail before restoring the fixes. Async navigation tests wait for the painted busy/status frame before resolving repository-row coordinates, and assert that concurrent Change/Stash reads preserve the active Push summary.
-
-The independent application-log window has its own GPUI entity, request ownership and cancellable read task. `LogViewerHost` reads the current daily file off the UI thread and bounds snapshots to the latest 256 KiB and 2,000 lines. A missing file is an empty state; read errors can be retried. Closing releases the view and cancels publication, and reopening starts a fresh request. Existing log redaction stays at the writer.
-
-Four P1 desktop cases verify separate-window activation without changing the main selection, refresh and clipboard contents, bounded large-log scrolling using painted end-line bounds, missing/read-error recovery, and closing/reopening while a read is held. Windows also exercises native Alt+F4 closure. `GIT_MASTER_TEST_LOGS_GATE` controls the reader via the existing test-only worker gate. `get_logs_view_tree` exposes read-only snapshots after the log window paints; the driver selects windows by process ID plus exact title and uses each window's own bounds. Log fixtures assert paths stay inside isolated test state before changing files, and use unique refresh markers to reject stale snapshots.
-
-The log window polls once per second with at most one read in flight; manual refresh uses the same serialized read path. Polling does not replace content with a loading screen. The framework-independent Viewer model buffers successful snapshots while following is paused, including when the bounded tail rolls over. Resume adopts the latest buffer and requests bottom alignment during layout. Upward wheel input pauses immediately; downward input checks the real scroll handle after GPUI dispatch and resumes only at the bottom. Closing the window cancels both the timer and read publication. All read errors retain the last readable snapshot and buffered update; a fixed-height status line shows retrying errors without moving a paused viewport; polling recovers without a click.
-
-Three additional P1 desktop cases append real log entries without clicking Refresh, assert the painted final line is visible when following, verify upward scrolling freezes both content and position across completed reads and tail rollover, resume by button and wheel, and exercise an automatic read failure/recovery. A worker gate makes the failure setup deterministic. Two Viewer regressions cover buffering/rollover and automatic-error recovery independently of GPUI.
-
-The log review adds four desktop regressions. Automatic and queued manual read errors must preserve both the displayed content and exact painted visible-row position, then recover into the paused buffer. Both cases fail on the pre-fix build (the automatic error inserted a new row; manual error discarded the snapshot). The result gate `GIT_MASTER_TEST_LOGS_RESULT_GATE` holds already-read snapshots by numbered tickets (`armed`, `N.hold`, `N.entered`, `N.release`, `N.completed`), with a 30-second bound and fixture cleanup. An old window's result is released only after a new window has loaded and paused; generation, content and follow state must survive that completion and two later polls. Another case queues three manual clicks while a read is held, observes two timer ticks without overlapping work, then proves the next request originated from the manual queue and buffers its result if the user pauses while it is in flight. Read origin prevents a later automatic poll from falsely satisfying the queued-refresh test; removing queued manual dispatch was verified to fail that assertion. Observation counters and result gates exist only in the test build; input stays native and RPC stays read-only.
-
-Nine rotation/truncation desktop cases cover rename-and-recreate and copy-truncate replacements, plus the December 31 to January 1 daily path transition, both while following and paused. Each starts with a bounded large tail and replaces it with short content, asserting exact content/path, truncation reset, paused painted position and buffered resume. Numbered result gates release the first post-change read while holding later reads, so a later poll cannot repair a bad assertion. A missing new-day file must become empty automatically; a real Stage operation then writes to the new daily file and is followed without changing the previous file. GIT_MASTER_TEST_LOG_DATE is a test-build-only date-file dependency shared by reader and writer; production always uses the local calendar date and no system clock is changed. Date-file updates use atomic replacement. Caching the first daily read path was verified to fail the new-year regression on its first post-change result. Oversized Unicode and ASCII entries must retain the exact valid suffix and put the final wrapped row in view, while all toolbar controls remain inside the window. Large retained tails must expose fewer than 100 actually laid-out rows to prove frame work stays bounded. That case fails on the old executable, which displays an empty log. Rust regressions cover exact byte-boundary lines and oversized entries with no newline, LF and CRLF.
-
-Under Linux/Xvfb the driver raises the PID/title-selected native window before focusing it: with no window manager, focusing the main window alone leaves Logs above it and routes clicks to the wrong surface. The log-window helper also waits for its initial paint and explicitly activates each new native window, matching main-window startup: GPUI can leave unfocused Xvfb windows idle. The new-day writer test exercises the switch in both directions. The CI desktop dependencies bring in Droid fallback fonts for the large Unicode log cases. Minimal Linux environments need `fonts-droid-fallback`; the data, content and painted-position assertions remain unchanged.
-
-Large log text is prepared on the reader worker as immutable display rows, each at most 512 Unicode scalars. The GPUI view renders those bounded rows rather than passing the full multiline body or an oversized final entry to a single text element. Empty rows retain line height; Copy displayed keeps the original text without inserted display breaks. The painted end marker identifies the final rendered chunk, including wrapped entries. Host regressions verify empty rows, Unicode boundaries, row size and unchanged copy text.
-
-The log body uses GPUI ListState to measure and paint only visible rows plus a small overdraw region; bounding the total bytes or each text run alone does not bound a frame containing thousands of Unicode lines. Display rows are shared immutable worker output. Replacing a followed snapshot resets list measurements and anchors at the end; a paused snapshot and its list remain unchanged until resume. For offscreen end entries, tests compare the first fully visible real row (index, text and painted y) rather than inventing end bounds. They still require the real final row to be painted inside the viewport after follow or downward scrolling.
-
-X11 wheel input is a batch of native notch events. Pause tests establish their baseline only after the same fully visible row (index, text and painted y) survives two timer-driven painted frames. This settling occurs before changing log files or releasing a held result; post-update assertions remain immediate and strict. Waiting only for following=false can capture the first notch and falsely blame the remaining legitimate wheel movement on an async read.
-
-Five geometry regressions exercise native window resizing, paused wrapped-row anchors away from tail clamping, rapid wheel reversals with buffered reads, pausing the initial read before scrolling near the beginning, and a final row clipped by the list padding. Read gates prevent later polls from repairing resize/follow state. The actual ListState viewport and first partially visible row have read-only painted bounds. Follow resumes only after a frame paints the actual tail inside this viewport, with input/frame ownership rejecting superseded checks. The test snapshot captures the state rendered by that frame before follow can adopt a pending snapshot. Resizing a paused view measures only its bounded anchor row with the shared font/style and retains its fractional position; GPUI invalidates the remaining row heights lazily. Native Windows activation requires the exact selected handle, and keeps the window raised until focus is acknowledged.
-
-Rename preview regressions cover both pure staged renames and renames with staged edits plus newer working-tree edits. They require both original and destination paths, removed old lines and added new lines, exclude a similarly named literal-path neighbor, and compare index entries, status and working bytes before/after preview. Both desktop cases fail on the pre-fix executable. Rust coverage also selects either rename path and exercises Git rendering, missing-difft fallback, and the installed renderer. Rename detection runs before literal path selection; difft preserves rename metadata even when file contents are identical.
-
-Changed-file badges use the corresponding index or working-tree status, independently of the aggregate file description. For example, a staged rename followed by a working edit shows R in Staged and M in Working; an added file with a later edit shows A and M. The mixed-status regression reads real repository statuses and verifies that preview does not change HEAD, index contents or working files.
+操作确认在生产和测试构建中使用同一跟随主题的 GPUI 组件。测试构建添加边界和状态观测，让桌面测试能点击真实 Cancel／Confirm 控件并执行批准回调。破坏性提示初始焦点为 Cancel，支持 Escape、Tab／方向键、Enter 和 Space。结构化风险字段和预览表通过工具包的字符串提示接口，以 JSON 形式传递；原生目录／文件选择器仍独立。视觉验收要求截图和对应状态比较。
 
 
-The rename review expands these cases to four renderer/content combinations. A native Rust fixture compiled once by rustc is detected as difft but returns malformed JSON during rendering; its invocation record proves both nonempty sections actually attempted difft before Git fallback. Section-specific assertions check exact old/new line numbers, then repeat previews after Stage and Unstage, verify index blob identity, restored source paths, unchanged working bytes, and hidden empty sections. The installed-difft Rust case now rejects silent fallback when difft is available. Mutation verification swaps the two rendered sections while keeping the combined text unchanged: the new edited-rename desktop case rejects the wrong staged old line. No production behavior changed in this review.
+## 失败产物与 CI
 
-## Progressive Git history
+`--artifacts test-results/e2e` 选择诊断目录。每个用例记录应用输出和隔离的操作日志。失败时还保存最后的视图树，并在可用时保存裁剪到测试应用客户窗口的截图。`--junitxml` 输出 JUnit XML 报告。
 
-History limits apply separately to each selected local tip and matching remote tip, and to each submodule history. Each read probes one extra commit to detect exhaustion, merges by OID, and topologically orders only the selected union (child before parent, with time/OID tie breaking). Expansion raises each prefix by 200 and rebuilds on the background executor; it currently rereads the bounded prefixes rather than retaining libgit2 walkers between requests. Shared commits appear once.
+CI 在 Linux、Windows 和 macOS 构建应用。E2E 作业还执行 Rust 回归和驱动确认检查，再在 Linux Xvfb 下串行运行桌面 pytest；即使测试失败，也上传 JUnit、应用日志、失败视图树和截图。本地 Windows 在真实桌面运行同样测试。测试不需要网络凭据或外部 Git 托管。
 
-The toolkit-independent `HistoryHost` owns request generations and duplicate/cancelled completion handling. The GPUI adapter owns the cancellable task and validates repository, selection, branch filter, navigation revision, and prefix before publishing. Existing node defaults and saved user coordinates remain stable; new rows append below the old layout. Canvas proximity loading pauses after a failed read until an explicit retry. The toolbar exposes the same expansion for List and Canvas, and hides the expansion control when all histories are exhausted.
+任务反馈回归在 Git hook 暂停真实 Push，再让另一次 Push 以 120 行诊断被拒绝。它验证紧凑与展开面板边界、剩余内容高度、完成后自动折叠、完整剪贴板输出和远端 Git 状态。最后一行诊断具有真实绘制边界：起初必须位于详情视口外，滚轮滚动后完全进入。不能仅凭截图断言滚动成功。通过时的截图保存到该用例产物目录。
 
-## Navigator design verification
+十二个任务进度用例在实际 worker 边界暂停 Stage、Unstage、Save、Apply、Pop 和 Drop，每项分别在先前成功及可恢复失败之后执行。断言绘制摘要文本、新状态修订、旧详情折叠及最终 Git／索引／文件状态。`GIT_MASTER_TEST_WORKTREE_GATE` 指向测试专用 gate 目录；创建目录启用 gate，`entered` 确认 worker 到达，`release` 恢复，限时 30 秒。并发读取保留运行中修改操作的状态。共享 worker gate 也保留已有扫描取消边界。
 
-`test_design_flows.py` covers overview navigation, keyboard branch filtering without checkout, retrying only failed batch remotes, cancelling the batch-switch preview, and read-only conflict preview with cancelled staging. Confirmation tests explicitly answer the prompt; actions that open a prompt must not wait for mutation completion before answering it. `test_appearance.py` verifies theme persistence and retained navigation/selection state.
+Windows 前台激活被拒绝时，驱动仅临时抬高自己的窗口，确认安全标题点属于测试进程后点击，再恢复正常叠放。绝不点击其他应用窗口来获取焦点。
 
-Modal keyboard checks must include both key-down and key-up. Confirmation and recovery cards respond to Enter/Space on key-up while consuming the event, so restored focus cannot activate the source button again. Test-only `GIT_MASTER_TEST_DETAIL_READ_GATE`, `GIT_MASTER_TEST_WORKTREE_READ_GATE`, and `GIT_MASTER_TEST_HISTORY_READ_GATE` hold actual background reads for pending/refresh/append screenshots using the same bounded gate and `finally` release contract; they do not synthesize repository data or delay production builds.
+变异验证：移除工作树开始状态更新后，Stage-after-failure 用例会拒绝过时错误摘要；禁用垂直滚动后，长错误用例因等待绘制的末行进入视口而超时。两种变异均已验证失败，再恢复修复。异步导航测试先等待绘制的 busy／status 帧，再解析仓库行坐标，并断言并发 Change／Stash 读取保留活动 Push 摘要。
 
-Standard non-modal primary actions share `ui::button_style::primary`: opaque text with paired normal/pressed fills, a contrasting focus ring, and an explicit disabled appearance/reason. The brighter link/status accent is not a white-label button fill. Keep text color fixed while hovering; GPUI shapes inherited text before hover painting.
+独立应用日志窗口有自己的 GPUI entity、请求归属和可取消读取任务。`LogViewerHost` 在 UI 线程之外读取当前日期文件，将快照限制为最近 256 KiB 和 2,000 行。文件缺失显示空状态；读取错误可重试。关闭时释放视图并取消发布，重新打开创建新请求。已有日志脱敏仍由写入器负责。
 
-Branch popovers use persistent focus handles on their visible triggers. Closing a popover returns focus to its trigger before removing the focused menu/search subtree, so Escape, Ctrl+K and subsequent Tab navigation remain usable. Checkout and delete actions use the same close path before starting background work or opening a confirmation.
+四个 P1 桌面用例验证独立窗口激活不改变主选择、刷新与剪贴板内容、基于已绘制末行边界的有界大日志滚动、缺失／读取错误恢复，以及读取暂停期间的关闭／重开。Windows 另测原生 Alt+F4 关闭。`GIT_MASTER_TEST_LOGS_GATE` 通过已有测试专用 worker gate 控制读取器。`get_logs_view_tree` 在日志窗口绘制后暴露只读快照；驱动按进程 ID 加精确标题选择窗口，使用各窗口自身边界。日志夹具修改文件前断言路径位于隔离测试状态内，并用唯一刷新标记拒绝过时快照。
 
-Conflict previews run on the worktree worker. The current file is limited to 256 KiB / 600 lines; the independent stage-2 and stage-3 index contents are each limited to 128 KiB / 600 lines. They use bounded read-only rows and never infer resolution from marker absence. Binary files receive an external-tool notice; symlink previews read the link target text rather than following the link. Previewing and cancelling resolution leave the unmerged index and file bytes intact. Stash preview line counts describe the bounded rendered partitions, not an independent full-repository numstat.
+日志窗口每秒轮询，最多一个读取在途；手动刷新使用同一串行读取路径。轮询不将内容替换成加载页。独立于框架的 Viewer 模型在暂停跟随时缓冲成功快照，包括有界尾部滚动淘汰时。恢复后采用最新缓冲，在布局时请求底部对齐。向上滚轮立即暂停；向下输入在 GPUI 分发后检查真实滚动句柄，仅到底部才恢复。关闭窗口同时取消计时器和读取发布。所有读取错误保留最近可读快照及缓冲更新，固定高度状态行显示重试错误，不移动暂停视口；轮询无需点击即可恢复。
 
-The root `design-qa.md` records desktop visual comparisons and the scoped test runs for this redesign. Captures and JUnit files are local ignored artifacts under `test-results/navigator/`; they are not shipped with the application. The native desktop build is the implementation target, so browser console and CSS viewport checks do not apply.
+另有三个 P1 桌面用例在不点击 Refresh 的情况下追加真实日志，断言跟随时绘制末行可见，验证向上滚动会在读取完成和尾部淘汰后仍冻结内容与位置，通过按钮和滚轮恢复，并覆盖自动读取失败／恢复。worker gate 让失败设置具有确定性。两个 Viewer 回归在 GPUI 之外覆盖缓冲／淘汰与自动错误恢复。
 
-Stash Pop is implemented as application followed by an explicit unmerged-index check and only then deletion of the same stash identity. libgit2 may return success after producing conflicts, so its return value alone must never authorize dropping the record. The regression fixture checks the actual unmerged index and retained stash OID.
+日志审查新增四个桌面回归。自动读取和排队手动读取失败，都必须保留显示内容及精确的已绘制可见行位置，随后恢复到暂停缓冲。这两例在修复前均失败：自动错误插入新行，手动错误丢弃快照。结果 gate `GIT_MASTER_TEST_LOGS_RESULT_GATE` 按编号票据（`armed`、`N.hold`、`N.entered`、`N.release`、`N.completed`）保留已读取快照，限时 30 秒，由夹具清理。只有新窗口已加载并暂停后才释放旧窗口结果；代次、内容和跟随状态须在该完成及后两次轮询中保持。另一用例在读取暂停时排队三次手动点击，观察两次计时器 tick 不重叠工作，再证明下一请求来自手动队列；若用户在途中暂停，其结果应被缓冲。读取来源防止后续自动轮询错误满足排队刷新测试；移除手动队列分发已验证会使断言失败。观察计数器和结果 gate 只存在于测试构建；输入保持原生，RPC 保持只读。
 
-Canvas connections attach directly to rounded card boundaries: parent bottom to parent top, and gray dashed gitlink right to left. The toolkit-independent rectilinear router avoids other cards and reference labels, retaining every Git parent edge, including merges. HEAD is a compact nearby reference label with no graph edge of its own. Unloaded parent continuations use blue dashed strokes. Routing regressions cover merge parents, reversed dragged positions and reference-label obstacles; desktop verification additionally checks the painted endpoints and absence of external dots/ports/timelines.
+九个轮转／截断桌面用例覆盖重命名后重建、复制后截断，以及 12 月 31 日到 1 月 1 日的按日路径切换，分别测试跟随和暂停。各例从有界大尾部开始，替换为短内容，断言精确内容／路径、截断重置、暂停时绘制位置及缓冲恢复。编号结果 gate 释放变化后第一次读取，同时拦住后续读取，避免后续轮询修补错误断言。新日期文件缺失时必须自动变空；真实 Stage 操作随后写入新日期文件并被跟随，不改变旧文件。GIT_MASTER_TEST_LOG_DATE 是测试构建专用日期文件依赖，读取器和写入器共享；生产始终使用本地日历日期，不修改系统时钟。日期文件通过原子替换更新。缓存第一次日文件路径已验证会在新年回归的首个变化后结果中失败。超大 Unicode 和 ASCII 条目必须保留精确有效后缀，将最后换行行显示在视口内，同时所有工具栏控件仍在窗口内。保留的大尾部必须实际布局少于 100 行，证明每帧工作有界。旧可执行文件显示空日志，在该例失败。Rust 回归覆盖精确字节边界行，以及无换行、LF 和 CRLF 的超大条目。
 
-Canvas placeholder placement reserves an unoccupied row for each distinct unloaded OID, including parent frontiers and module references. A missing reference never replaces or covers an already-loaded commit at the source row. The append stabilizer preserves these distinct card positions when placeholders become real commits.
+Linux／Xvfb 下，驱动先抬高按 PID／标题选定的原生窗口再聚焦：没有窗口管理器时，只聚焦主窗口会让 Logs 留在其上，将点击路由到错误界面。日志窗口辅助方法也等待首次绘制并显式激活每个新原生窗口，与主窗口启动一致；GPUI 可能让未聚焦 Xvfb 窗口闲置。新日期写入器测试双向切换。CI 桌面依赖引入 Droid 回退字体，支持大型 Unicode 日志用例。最小 Linux 环境需要 `fonts-droid-fallback`；数据、内容和绘制位置断言不变。
+
+读取 worker 将大日志预处理为不可变显示行，每行最多 512 个 Unicode 标量。GPUI 视图渲染这些有界行，不把完整多行正文或超大末条交给单个文本元素。空行保留行高；Copy displayed 保留原文本，不插入显示换行。绘制末尾标记识别最后渲染块，包括自动换行条目。Host 回归验证空行、Unicode 边界、行大小和复制文本不变。
+
+日志正文使用 GPUI ListState，只测量和绘制可见行及少量额外区域；仅限制总字节或单个文本段，不能限制包含数千 Unicode 行的一帧工作量。显示行是共享的不可变 worker 输出。替换跟随快照会重置列表测量并锚定末尾；暂停快照和列表在恢复前不变。末条在屏外时，测试比较首个完全可见真实行的索引、文本和绘制 y，而非虚构末尾边界。跟随或向下滚动后，仍要求真实末行绘制在视口内。
+
+X11 滚轮输入是一批原生刻度事件。暂停测试须等同一完全可见行（索引、文本、绘制 y）跨两个计时器驱动的绘制帧保持不变，才建立基线。稳定等待发生在修改日志或释放暂停结果之前；更新后的断言仍即时且严格。仅等待 following=false 可能捕获首个刻度，误将其余合法滚轮移动归因于异步读取。
+
+五个几何回归覆盖原生窗口缩放、远离尾部钳制的暂停换行行锚点、带缓冲读取的快速滚轮反转、先暂停初始读取再滚到开头附近，以及被列表 padding 裁切的末行。读取 gate 防止后续轮询修补 resize／follow 状态。实际 ListState 视口和首个部分可见行有只读绘制边界。只有某帧将真实尾部绘制进视口后才恢复跟随，并通过输入／帧归属拒绝被取代的检查。测试快照捕获该帧实际渲染状态，先于跟随采用待处理快照。缩放暂停视图时，只用共享字体／样式测量有界锚定行，保留其行内相对位置；其余行高由 GPUI 惰性失效。Windows 原生激活要求精确选定句柄，在焦点获确认前保持窗口抬高。
+
+重命名预览回归覆盖纯暂存重命名，以及带暂存编辑和较新工作树编辑的重命名。它们要求原路径与目标路径、已删除旧行和新增行，排除名称相近的字面路径邻居，并比较预览前后索引条目、状态和工作字节。两个桌面用例都在修复前失败。Rust 覆盖选择任一重命名路径，并执行 Git 渲染、difft 缺失回退和已安装渲染器。重命名检测先于字面路径选择；即使文件内容相同，difft 也保留重命名元数据。
+
+变更文件徽标分别使用对应索引或工作树状态，不依赖文件的汇总描述。例如，暂存重命名后又修改工作文件时，Staged 显示 R，Working 显示 M；新增文件后再编辑时分别显示 A 和 M。混合状态回归读取真实仓库状态，验证预览不会改变 HEAD、索引内容或工作文件。
+
+重命名审查将这些用例扩展为四种渲染器／内容组合。由 rustc 一次编译的原生 Rust 夹具会被识别为 difft，但渲染时返回畸形 JSON；调用记录证明两个非空部分都先尝试 difft，才回退 Git。各部分专属断言检查精确新旧行号，再在 Stage 和 Unstage 后重复预览，验证索引 blob 身份、原路径恢复、工作字节不变和空部分隐藏。已安装 difft 的 Rust 用例现会在 difft 可用时拒绝静默回退。变异验证交换两个渲染部分而保持组合文本不变：新的已编辑重命名桌面用例拒绝错误的暂存旧行。此次审查未改变生产行为。
+
+## 渐进式 Git 历史
+
+历史限制分别应用于每个选定本地 tip、匹配远端 tip 和各子模块历史。每次读取多探测一个提交以判断是否耗尽，按 OID 合并，仅对选定并集拓扑排序：子在父前，以时间／OID 打破平局。展开时每个前缀增加 200，在后台执行器重建；目前会重新读取有界前缀，不在请求之间保留 libgit2 walker。共享提交只出现一次。
+
+独立于工具包的 `HistoryHost` 管理请求代次和重复／已取消完成处理。GPUI 适配器管理可取消任务，发布前验证仓库、选择、分支过滤器、导航修订和前缀。已有节点默认位置和已保存用户坐标保持稳定，新行追加到旧布局下方。画布接近底部的加载在读取失败后暂停，直到显式重试。工具栏为 List 和 Canvas 提供同样的展开，所有历史耗尽时隐藏展开控件。
+
+## 导航界面设计验证
+
+`test_design_flows.py` 覆盖概览导航、不 checkout 的键盘分支过滤、只重试失败批处理远端、取消批量切换预览，以及取消暂存的只读冲突预览。确认测试显式回应提示；打开提示的操作不能先等待修改完成再回应。`test_appearance.py` 验证主题持久化及保留的导航／选择状态。
+
+模态键盘检查必须同时包含按下和释放。确认与恢复卡片在 Enter／Space 释放时响应并消费事件，防止焦点恢复后再次激活来源按钮。测试专用 `GIT_MASTER_TEST_DETAIL_READ_GATE`、`GIT_MASTER_TEST_WORKTREE_READ_GATE` 和 `GIT_MASTER_TEST_HISTORY_READ_GATE` 暂停真实后台读取，用于 pending／refresh／append 截图，使用同一有界 gate 和 `finally` 释放约定；不合成仓库数据，也不延迟生产构建。
+
+标准非模态主要操作共用 `ui::button_style::primary`：不透明文本、配套的正常／按下填充色、对比鲜明的焦点环，以及明确的禁用外观和原因。较亮的链接／状态强调色不用于白字按钮底色。悬停时保持文本颜色固定；GPUI 在悬停绘制前已按继承的文本样式塑形。
+
+分支浮层在可见触发控件上使用持久焦点句柄。关闭浮层时，先将焦点返回触发控件，再移除含焦点的菜单／搜索子树，使 Escape、Ctrl+K 和后续 Tab 导航仍可用。checkout 和删除操作在启动后台工作或打开确认前，也使用相同关闭路径。
+
+冲突预览在工作树 worker 执行。当前文件最多 256 KiB／600 行，独立的 stage-2 和 stage-3 索引内容各最多 128 KiB／600 行。使用有界只读行，绝不根据缺少冲突标记推断已解决。二进制文件显示外部工具提示；符号链接预览读取链接目标文本，不跟随链接。预览及取消解决操作保持未合并索引和文件字节不变。stash 预览行数描述有界渲染分区，不是独立的全仓库 numstat。
+
+根目录 `design-qa.md` 记录本次重设计的桌面视觉比较和限定范围测试运行。截图与 JUnit 文件是 `test-results/navigator/` 下被忽略的本地产物，不随应用分发。实现目标是原生桌面构建，因此浏览器控制台和 CSS 视口检查不适用。
+
+Stash Pop 先应用，再显式检查未合并索引，最后才删除同一 stash 身份。libgit2 可能产生冲突后仍返回成功，因此绝不能仅凭其返回值批准丢弃记录。回归夹具检查实际未合并索引及保留的 stash OID。
+
+画布连接直接附着于圆角卡片边界：父连接从卡片底部到父卡片顶部，灰色虚线 gitlink 从右到左。独立于工具包的直角路由器避开其他卡片和引用标签，保留全部 Git 父边，包括合并。HEAD 是附近紧凑引用标签，没有自己的图边。未加载父提交的延续使用蓝色虚线。路由回归覆盖合并父提交、拖动后反转的位置和引用标签障碍；桌面验证还检查绘制端点，并确认没有外部圆点、端口或时间线。
+
+画布占位布局为每个不同的未加载 OID 预留空行，包括父提交边界和模块引用。缺失引用绝不替换或遮盖源行已有提交。占位变成真实提交时，追加稳定器保留这些不同卡片位置。

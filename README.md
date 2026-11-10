@@ -1,43 +1,43 @@
 # Git Master
 
-A desktop application built with [GPUI](https://www.gpui.rs/) for viewing the status of every Git repository under a parent directory at a glance. Open a workspace directory to browse each repository's clean or dirty status, current branch, and ahead/behind counts in the left sidebar, and view repository details and commit history in the right panel.
+基于 [GPUI](https://www.gpui.rs/) 构建的桌面应用，可一眼查看父目录下所有 Git 仓库的状态。打开工作区目录后，左侧栏展示各仓库是否干净、当前分支和领先／落后提交数，右侧面板展示仓库详情与提交历史。
 
-## Features
+## 功能
 
-- **Workspace navigation**: The workspace menu remembers the last eight directories locally. Search repositories by name or path and filter All / Modified / To sync. Repositories are grouped into Needs attention and Other repositories; filtering preserves the selected repository. Expanded submodules remain available beneath their parent.
-- **Appearance**: Light / Dark controls in the workspace header update the main window, commit canvas, diff previews and open Logs window together. The choice is remembered locally across restarts. Switching themes preserves navigation, branch filters, selected commit and scroll state. Button focus outlines appear during keyboard navigation; mouse clicks keep normal pressed/selected feedback without leaving a focus border.
-- **Branch controls**: Tab/arrow keys navigate the branch menu, Space/Enter activates the focused branch, and Escape closes it. The repository header shows the current branch and a separate Switch branch menu for checkout and safe deletion. In History, Show branches opens a searchable multi-select menu shared by List and Canvas. Select all or Current only changes the display without checking out a branch; at least one branch remains visible.
+- **工作区导航**：工作区菜单在本地记住最近八个目录。可按名称或路径搜索仓库，并按 All／Modified／To sync 过滤。仓库分为 Needs attention 与 Other repositories 两组；过滤保留已选仓库。展开的子模块仍显示在父仓库下。
+- **外观**：工作区标题栏中的 Light／Dark 控件同步更新主窗口、提交画布、差异预览和已打开的 Logs 窗口，并在本地保存选择，重启后仍有效。切换主题保留导航、分支过滤器、所选提交与滚动状态。键盘导航时显示按钮焦点轮廓；鼠标点击保留正常按下／选中反馈，不留下焦点边框。
+- **分支控件**：Tab／方向键在分支菜单中导航，Space／Enter 激活当前分支，Escape 关闭菜单。仓库标题栏显示当前分支，另有 Switch branch 菜单用于 checkout 和安全删除。History 中的 Show branches 打开可搜索、多选的菜单，供 List 与 Canvas 共用。Select all 或 Current only 只改变显示，不 checkout；至少保留一个可见分支。
 
-- **Batch scanning**: Select a parent directory to automatically discover and alphabetically sort all Git repositories directly beneath it.
-- **Local refresh**: Reopening the current workspace refreshes the repository list and selected repository details. Every 30 seconds, idle workspaces also refresh local status, history and the visible changes or stash preview; this does not fetch from remotes. Automatic refresh skips active operations, reads and open menus/dialogs, and preserves repository selection, branch filters and the loaded history range.
-- **Fetch All**: Fetch every configured remote of every project in the current repository list, pruning stale remote-tracking branches. Runs in the background, continues after failures, refreshes repository status and selected project details, and shows per-item success, failure and skipped results. Retry one failed item or all failed items without rerunning successful remotes. Projects without remotes are skipped; submodules are not separately included in this batch.
-- **Application logs**: Click Logs in the workspace header to open today's application and Git-operation log in a separate window. Logs refresh automatically every second and follow the latest entries. Scrolling up pauses following and keeps the displayed content and reading position stable while new entries are buffered. Scroll back to the bottom or click Follow latest to resume; Pause follow also pauses explicitly. Resizing keeps the latest line visible while following and retains your place in wrapped text while paused. Choose a saved log file, return to today’s log, open the log directory, refresh, or copy the displayed text, and scroll without leaving the current repository view. Repeated clicks activate the existing window. Large files show the latest 2,000 lines, up to 256 KiB; the full log stays on disk. Each refresh reopens the current daily file, including after rotation or midnight. If the latest entry alone exceeds the byte limit, its valid text suffix remains visible. Read failures keep the last readable content and reading position, including after a manual refresh; the status line shows the error while automatic retry continues.
-- **Background task feedback**: A compact status bar stays at the bottom of the window and shows the current task with an animated activity indicator. Results stay on one line; open Details to expand complete output or batch results above the bar in a bounded, scrollable panel, or Copy to copy it. New task messages collapse previous details automatically.
-- **Status overview**: Each repository shows:
-  - The current branch
-  - Whether the working tree is clean (`✓` in green / `●` in red)
-  - Every remote's `↑ahead ↓behind` counts against the current branch (using the configured upstream branch name for its remote, otherwise the same branch name). `—` means no comparable fetched reference is available. Counts use locally fetched references; click **Fetch All** to update them.
-- **Switch all to default**: Switch every listed project to its default branch in the background. Uses `origin/HEAD`, then a default branch agreed on by other remotes, then local `main` or `master`. Creates a tracking branch if the identified remote default has no local branch. Never forces checkout or discards changes; failures are logged and other projects continue. Submodules are not separately switched.
-- **Details panel (Overview tab)**: Displays the repository path, current branch, remote URL, and file status counts (added / modified / deleted / renamed / conflicted).
-- **Commit history (History tab)**: Shared branch filters apply to both the list and canvas. History initially includes up to 200 commits per selected branch and matching remote branch, so older branch tips remain visible. Use **Load 200 more per branch** to continue into older history; the canvas also loads another batch when you pan near the bottom. Existing cards, dragged positions, pan, and zoom stay fixed while history is appended. Switch branches or safely delete a non-current, fully merged local branch. Each remote provides Fetch, Pull --rebase, Push, and Reset controls; Pull uses Git's auto-stash behavior so local edits are restored after the rebase. The list draws parent links to show forks and merges; dashed tails indicate history outside the loaded range. The canvas uses the rounded commit cards themselves as nodes, without external dots, ports or a side timeline. Parent edges join card bottoms to parent-card tops; gray dashed gitlinks join the main commit card’s right edge to the module card’s left edge. Routes avoid card content and nearby HEAD reference labels. Blue dashed parent edges mark unloaded history. Cards and reference labels can be dragged; background panning and wheel zoom preserve the graph.
-- **Changes**: Lists changed and untracked files, previews staged and working-tree diffs, and supports Stage / Unstage per file without discarding working-tree edits.
-- **Stashes**: Saves tracked changes and untracked files, lists stashes, opens saved contents by clicking a stash name or View, shows commit information and file summaries with separate staged / working-tree / untracked diffs, and supports Apply, Pop, and confirmed deletion. Apply retains the stash; Pop removes it only after a successful application. Git identity must be configured to create a stash. Both tabs load on selection and provide Refresh; they also work for initialized submodules. Both diff views use a monospace code display, separate old/new line-number gutters, red/green removed/added rows, and word-level change highlights; empty sections are hidden. Difftastic is detected automatically on PATH and its structured output supplies line alignment and changed-token ranges. If it is missing or cannot render a preview, the built-in Git diff is used. Detection is repeated for each preview; no Git configuration changes are needed. Text previews are limited to 512 KiB per diff and code views to 2,000 rows.
-- **Sync colors**: Remote status is green when synchronized, blue when ahead, yellow when behind, red when diverged, and gray when comparison is unavailable.
-- **Commit details**: Click a commit in List or Canvas (or its HEAD reference label) to open full hashes, parents, author/committer identities and dates, the complete message, and changed-file statistics in a right-hand inspector beside the history. Message encoding is decoded by Git into UTF-8 for both display and copying. Commit bodies support Markdown headings, emphasis, lists, task lists, quotes, code blocks, tables and web/mail links, with Preview / Source switching and original-body copy. HTML stays literal and images show alt text without loading external resources. Copy and Close controls are available, with inline hash copy and expandable read-only file differences. Submodule nodes use their own repository; dragging a canvas node does not open details. Merge changes are compared with the first parent.
-- **Main/submodule commit graph**: The canvas places the main repository and its direct submodules in adjacent lanes. Dashed links show which submodule commit each main-repository commit records through its Git gitlink. References outside the loaded history, and references to uninitialized submodules, remain visible as placeholder nodes.
-- **Submodule support**: Repositories containing submodules can be expanded in the left sidebar. Select a submodule to view its details and commit history in the right panel.
-- **Submodule initialization**: Uninitialized submodules display their status and URL and can be initialized from the right panel with `git submodule update --init`.
-- **Non-blocking UI**: All Git I/O runs on background threads, keeping the interface responsive while repositories are scanned and details are loaded. Stale scan and detail results are discarded automatically.
+- **批量扫描**：选择父目录，自动发现直接子目录中的 Git 仓库，并按字母排序。
+- **本地刷新**：重新打开当前工作区会刷新仓库列表和所选仓库详情。空闲工作区还每 30 秒刷新本地状态、历史，以及可见的变更或 stash 预览，不从远端 fetch。自动刷新跳过活动操作、读取和已打开的菜单／对话框，保留仓库选择、分支过滤器和已加载历史范围。
+- **Fetch All**：获取当前仓库列表中每个项目的全部已配置远端，并清理过时的远端跟踪分支。后台执行，失败后仍继续其他项目，刷新仓库状态和所选项目详情，逐项显示成功、失败和跳过结果。可重试单个失败项或全部失败项，不重复执行已成功远端。无远端项目跳过；子模块不单独加入批次。
+- **应用日志**：点击工作区标题栏的 Logs，在独立窗口打开当天应用与 Git 操作日志。日志每秒自动刷新并跟随最新条目。向上滚动暂停跟随，缓冲新条目的同时保持显示内容与阅读位置不变；滚回底部或点击 Follow latest 恢复，也可用 Pause follow 显式暂停。调整窗口大小时，跟随模式保持最新行可见，暂停模式保留换行文本中的阅读位置。无需离开当前仓库视图，即可选择已保存的日志文件、返回今日日志、打开日志目录、刷新、复制显示文本和滚动；重复点击激活已有窗口。大文件只显示最近 2,000 行、最多 256 KiB，完整日志保留在磁盘。每次刷新重新打开当前日期文件，包含轮转和跨午夜后。最新单条日志超过字节限制时，仍显示其有效文本后缀。读取失败保留最近可读内容和阅读位置，手动刷新也如此；状态行显示错误，自动重试继续。
+- **后台任务反馈**：紧凑状态栏固定在窗口底部，显示当前任务与活动动画。结果保持单行；打开 Details 可在状态栏上方的有界滚动面板展开完整输出或批处理结果，Copy 可复制。新任务消息自动折叠先前详情。
+- **状态概览**：每个仓库显示：
+  - 当前分支。
+  - 工作树是否干净（绿色 `✓`／红色 `●`）。
+  - 每个远端相对当前分支的 `↑ahead ↓behind` 数量；该远端有已配置上游时使用上游分支名，否则使用同名分支。`—` 表示没有可比较的已获取引用。计数基于本地已获取引用，点击 **Fetch All** 更新。
+- **Switch all to default**：后台将每个列出的项目切换到默认分支，依次使用 `origin/HEAD`、其他远端一致认可的默认分支，以及本地 `main` 或 `master`。已识别远端默认分支没有本地分支时，创建跟踪分支。绝不强制 checkout 或丢弃改动；失败记录日志，其他项目继续。子模块不单独切换。
+- **详情面板（Overview 页签）**：展示仓库路径、当前分支、远端 URL，以及新增、修改、删除、重命名和冲突文件数。
+- **提交历史（History 页签）**：列表和画布共享分支过滤。初始历史包含每个选定分支及匹配远端分支最多 200 个提交，保留较旧分支尖端可见。通过 **Load 200 more per branch** 继续加载，画布平移接近底部时也会追加一批。追加时已有卡片、拖动位置、平移和缩放保持不变。可切换分支，或安全删除非当前且已完全合并的本地分支。每个远端提供 Fetch、Pull --rebase、Push 和 Reset；Pull 使用 Git 自动 stash，使本地编辑在 rebase 后恢复。列表绘制父链接展示分叉和合并，虚线尾部表示已加载范围外的历史。画布直接以圆角提交卡片作为节点，不使用外部圆点、端口或侧边时间线。父连接从卡片底部连到父卡片顶部；灰色虚线 gitlink 从主提交卡片右边连到模块卡片左边。路由避开卡片内容及附近的 HEAD 引用标签。蓝色虚线父连接表示尚未加载的历史。卡片和引用标签可拖动，背景平移和滚轮缩放保留图结构。
+- **Changes**：列出已修改和未跟踪文件，预览暂存及工作树差异，支持逐文件 Stage／Unstage，不丢弃工作树编辑。
+- **Stashes**：保存已跟踪改动与未跟踪文件，列出 stash，点击名称或 View 打开保存内容，展示提交信息和文件摘要，并分别展示暂存、工作树、未跟踪差异；支持 Apply、Pop 和确认删除。Apply 保留 stash，Pop 仅在应用成功后移除。创建 stash 必须配置 Git 身份。两个页签选中时加载并提供 Refresh，已初始化子模块同样可用。两个差异视图都使用等宽代码显示、独立新旧行号栏、红绿删除／新增行和词级高亮，空部分隐藏。自动从 PATH 检测 Difftastic，通过其结构化输出取得行对齐和修改 token 范围；缺失或无法预览时使用内置 Git diff。每次预览重新检测，无需修改 Git 配置。每份差异文本最多 512 KiB，代码视图最多 2,000 行。
+- **同步颜色**：已同步为绿，领先为蓝，落后为黄，分叉为红，无法比较为灰。
+- **提交详情**：点击列表、画布中的提交或其 HEAD 引用标签，在历史右侧的检查面板中打开完整哈希、父提交、作者／提交者身份及日期、完整消息和变更文件统计。消息编码由 Git 解码为 UTF-8，用于显示和复制。提交正文支持 Markdown 标题、强调、列表、任务列表、引用、代码块、表格，以及网页／邮件链接，可切换 Preview／Source 并复制原正文。HTML 按字面显示，图片只显示替代文本，不加载外部资源。提供 Copy 与 Close、行内哈希复制和可展开的只读文件差异。子模块节点使用自身仓库；拖动画布节点不会打开详情。合并改动与第一个父提交比较。
+- **主仓库／子模块提交图**：画布将主仓库和直接子模块放在相邻泳道。虚线展示每个主仓库提交通过 Git gitlink 记录的子模块提交。已加载历史之外的引用，以及未初始化子模块的引用，保留为占位节点。
+- **子模块支持**：包含子模块的仓库可在侧栏展开，选择子模块后在右侧查看其详情和提交历史。
+- **子模块初始化**：未初始化子模块显示状态和 URL，可在右侧用 `git submodule update --init` 初始化。
+- **非阻塞 UI**：所有 Git I/O 在后台线程运行，扫描仓库和加载详情时界面保持响应。过时的扫描与详情结果自动丢弃。
 
-## Technology Stack
+## 技术栈
 
-- [`gpui`](https://crates.io/crates/gpui) — a GPU-accelerated Rust UI framework
-- [`git2`](https://crates.io/crates/git2) — Rust bindings for libgit2
-- [`chrono`](https://crates.io/crates/chrono) — commit timestamp formatting
+- [`gpui`](https://crates.io/crates/gpui)：GPU 加速的 Rust UI 框架。
+- [`git2`](https://crates.io/crates/git2)：libgit2 的 Rust 绑定。
+- [`chrono`](https://crates.io/crates/chrono)：提交时间戳格式化。
 
-## Build and Run
+## 构建与运行
 
-The Rust toolchain is required (edition 2024; a recent stable release is recommended).
+需要 Rust 工具链（edition 2024，建议使用较新的稳定版）。
 
 ```bash
 # Run in development mode
@@ -48,9 +48,9 @@ cargo build --release
 ./target/release/git_master
 ```
 
-After launching the application, open the workspace menu beside **Git Master**, choose **打开工作区** and select a parent directory containing multiple Git repositories.
+启动后，打开 **Git Master** 旁的工作区菜单，选择 **打开工作区**，再选择包含多个 Git 仓库的父目录。
 
-## Project Structure
+## 项目结构
 
 ```
 src/
@@ -67,21 +67,20 @@ src/
     └── theme.rs         # Color constants
 ```
 
-## Views
+## 视图
 
-- **Changes** groups staged, unstaged, untracked and conflicted files. The preview compares HEAD/index or index/working tree for the selected group; Stage and Unstage preserve working files. Conflicts show a bounded, read-only current file plus independent collapsible index-stage views and external recovery steps. Marking a conflict resolved requires confirmation before staging; it does not merge or validate the resolution automatically.
-- **Stashes** separates saved index, working-tree and untracked content. Apply retains the record; Pop removes it only after successful application with a conflict-free index. Conflicts retain the record and show recovery guidance. Deletion uses a themed confirmation with Cancel focused initially.
-- **Overview** shows repository path, branch, HEAD, Git state, changes, remote comparisons and submodules, with copy/open/fetch/navigation actions. Remote addresses are redacted. Comparison selection does not change Git upstream configuration.
-- **Canvas** displays local and fetched remote branch-tip reference cards, including symbolic remote HEAD when available. Thin reference lines connect each label card directly to its commit and follow dragging; they are distinct from commit-parent and submodule links. It supports zoom, fit, return to HEAD and layout reset. Fit includes every loaded card, even in long histories, and keeps lane headings separate at overview scale. The overview keeps its loaded range stable; use Load more explicitly there, or zoom in and pan near the frontier for automatic loading. Parents and submodule gitlinks are separate. Narrow windows collapse commit details first and provide an explicit expand control.
+- **Changes** 按暂存、未暂存、未跟踪和冲突分组。预览根据所选组比较 HEAD／索引或索引／工作树；Stage 和 Unstage 保留工作文件。冲突显示有界只读当前文件、可独立折叠的索引阶段视图及外部恢复步骤。将冲突标为已解决时，必须先确认再暂存；不会自动合并或验证解决结果。
+- **Stashes** 分开显示已保存索引、工作树和未跟踪内容。Apply 保留记录；Pop 仅在应用成功且索引无冲突后移除。冲突时保留记录并显示恢复指引。删除使用跟随主题的确认对话框，初始焦点为 Cancel。
+- **Overview** 展示仓库路径、分支、HEAD、Git 状态、变更、远端比较和子模块，并提供复制、打开、fetch 和导航操作。远端地址经过脱敏；比较选择不修改 Git 上游配置。
+- **Canvas** 显示本地及已获取远端的分支尖端引用卡片，远端符号 HEAD 可用时也显示。细引用线从每张标签卡片直接连到其提交，并跟随拖动；它们与提交父连接和子模块连接不同。支持缩放、适合窗口、返回 HEAD 和重置布局。适合窗口会包含每张已加载卡片，即使历史很长；概览比例下泳道标题保持分开。概览保留已加载范围；可显式 Load more，或放大后平移接近边界以自动加载。父连接与子模块 gitlink 分开。窄窗口优先折叠提交详情，并提供显式展开控件。
 
-## Notes
+## 说明
 
-- Reset requires a clean working tree and index, including no untracked files or in-progress Git operation. Commit or stash changes first. The check runs before and after Fetch; Reset still replaces local commits with the remote branch and requires confirmation.
 
-- Right-click a project in the sidebar to open its directory or launch a terminal there (PowerShell on Windows, Terminal on macOS, `x-terminal-emulator` on Linux). Branch switching, Fetch, Pull and Push are available in the repository header. Reset is in the remote’s **⋯** menu. The workspace menu contains batch actions, recent directories and operation logs. Batch switching previews the parent repositories and their default branches before confirmation.
+- Reset 要求工作树和索引干净，不能有未跟踪文件或进行中的 Git 操作。请先提交或 stash。Fetch 前后都会检查；Reset 仍会用远端分支替换本地提交，必须确认。
+- 右键侧栏项目可打开目录或在该目录启动终端（Windows 为 PowerShell，macOS 为 Terminal，Linux 为 `x-terminal-emulator`）。分支切换、Fetch、Pull 和 Push 位于仓库标题栏。Reset 位于远端的 **⋯** 菜单。工作区菜单包含批操作、最近目录和操作日志。批量切换在确认前预览父仓库及其默认分支。
+- Git 操作按钮按其说明修改仓库。Fetch All 只更新远端跟踪引用，不合并，也不更改工作树文件。
+- 移动节点只改变当前应用会话中的视觉位置，不重排或修改 Git 历史。
+- 扫描只检查所选父目录的直接子目录，不递归搜索嵌套仓库。
 
-- Git action buttons modify repositories as indicated. Fetch All updates remote-tracking references without merging or changing working-tree files.
-- Moving nodes only changes their visual position for the current application session; it does not reorder or modify Git history.
-- Scanning only checks the direct children of the selected parent directory; it does not recursively search nested directories for repositories.
-
-For development setup, test commands, and the P0/P1 E2E coverage matrix, see [DEVELOPMENT.md](DEVELOPMENT.md).
+开发环境、测试命令和 P0/P1 E2E 覆盖矩阵见 [DEVELOPMENT.md](DEVELOPMENT.md)。

@@ -219,6 +219,11 @@ class App:
         position = self.point(node_id)
         before = self.tree()
         pyautogui.click(*position, button=button)
+        if button == "left" and node_id in ("fetch-all-btn", "switch-all-main-btn"):
+            # An empty workspace has no operation completion to await. Consume
+            # the dismissal frame so the next click cannot reuse stale bounds.
+            self.wait(lambda tree: not (find(tree, node_id) or {}).get("bounds"),
+                "workspace action menu dismissed")
         if await_operation and button == "left" and self.is_operation(node_id, before):
             self.wait_completion(before["state"]["status_revision"])
 

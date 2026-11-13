@@ -77,3 +77,29 @@ def test_linux_window_selection_matches_utf8_title_after_pid_search(monkeypatch)
     assert app.window_geometry() == (0, 0, 1440, 1024)
     assert app.window == "20"
     assert ["xdotool", "windowfocus", "20"] in calls
+
+
+@pytest.mark.parametrize("action", ["fetch-all-btn", "switch-all-main-btn"])
+def test_empty_workspace_menu_action_waits_for_its_dismissal(monkeypatch, action):
+    app = App.__new__(App)
+    opened = {"state": {}, "children": [{"id": action, "bounds": {"x": 1}}]}
+    closed = {"state": {}, "children": [{"id": action}]}
+    frames = [opened]
+    app.tree = lambda: frames.pop(0) if len(frames) > 1 else frames[0]
+    app.point = lambda node_id: (1, 1)
+
+    def click(*args, **kwargs):
+        # Native input returns before GPUI paints the menu dismissal.
+        frames[:] = [opened, opened, closed]
+
+    def wait(predicate, description=""):
+        for _ in range(3):
+            tree = app.tree()
+            if predicate(tree):
+                return tree
+        raise AssertionError(description)
+
+    app.wait = wait
+    monkeypatch.setitem(sys.modules, "pyautogui", SimpleNamespace(click=click))
+    app.click(action)
+    assert not app.node(action).get("bounds"), "next action must observe a closed menu"
